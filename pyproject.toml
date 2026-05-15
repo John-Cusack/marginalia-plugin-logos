@@ -1,0 +1,37 @@
+[project]
+name = "marginalia-plugin-logos"
+version = "0.1.0"
+description = "Logos Bible Software integration — API proxy, verse-boundary ingestion, scholar authority tracking"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "httpx>=0.27",
+    "asyncpg>=0.29",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "structlog>=24.0",
+    "pyyaml>=6.0",
+    "sqlalchemy>=2.0",
+]
+auth = [
+    "playwright>=1.40",
+]
+
+[project.scripts]
+logos-login = "logos.cli.login:main"
+logos-diagnose = "logos.cli.diagnose:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["logos"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

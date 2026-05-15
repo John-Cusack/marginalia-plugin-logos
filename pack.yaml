@@ -1,0 +1,120 @@
+name: logos
+version: "0.1.0"
+author: John Cusack
+description: Logos Bible Software integration — API proxy, verse-boundary ingestion, scholar authority tracking
+license: MIT
+
+requires:
+  core_api: ">=0.1.0,<1.0.0"
+  python: ">=3.11"
+  pip:
+    - httpx>=0.27
+    - asyncpg>=0.29
+
+permissions:
+  network: full
+  llm: false
+  ingest: true
+  filesystem: read_write_plugin_data
+
+provides:
+  document_types:
+    - id: logos_book
+      default_chunker: verse_boundary
+
+  chunkers:
+    - id: verse_boundary
+      entry: "logos.ingest.chunker:VerseChunker"
+
+  mcp_tools:
+    - id: logos.passage_text
+      entry: "logos.tools.passage_text:handler"
+      description: Get Bible passage text in one or more translations
+    - id: logos.resolve_passage
+      entry: "logos.tools.resolve_passage:handler"
+      description: Resolve natural language Bible reference to Logos format
+    - id: logos.passage_suggestions
+      entry: "logos.tools.passage_suggestions:handler"
+      description: Get typeahead passage suggestions
+    - id: logos.passage_guide
+      entry: "logos.tools.passage_guide:handler"
+      description: Comprehensive passage guide with commentaries and cross-refs
+    - id: logos.exegetical_guide
+      entry: "logos.tools.exegetical_guide:handler"
+      description: Original language analysis for a passage
+    - id: logos.word_study
+      entry: "logos.tools.word_study:handler"
+      description: Hebrew/Greek word study guide
+    - id: logos.workflows
+      entry: "logos.tools.workflows:handler"
+      description: List available Logos workflow templates
+    - id: logos.commentary
+      entry: "logos.tools.commentary:handler"
+      description: Get commentary and study resources for a passage
+    - id: logos.cross_references
+      entry: "logos.tools.cross_references:handler"
+      description: Get cross-references for a passage
+    - id: logos.parallel_passages
+      entry: "logos.tools.parallel_passages:handler"
+      description: Get synoptic and thematic parallel passages
+    - id: logos.relations
+      entry: "logos.tools.relations:handler"
+      description: Get people, places, things for a passage
+    - id: logos.search
+      entry: "logos.tools.search:handler"
+      description: Full-text search across Logos books
+    - id: logos.library
+      entry: "logos.tools.library:handler"
+      description: Search user's Logos library metadata
+    - id: logos.toc
+      entry: "logos.tools.toc:handler"
+      description: Get table of contents for a Logos resource
+    - id: logos.factbook
+      entry: "logos.tools.factbook:handler"
+      description: Factbook report for biblical topics
+    - id: logos.study_assistant
+      entry: "logos.tools.study_assistant:handler"
+      description: AI study assistant (SSE stream)
+    - id: logos.ai_synopsis
+      entry: "logos.tools.ai_synopsis:handler"
+      description: AI synopsis of search results
+    - id: logos.notes
+      entry: "logos.tools.notes:handler"
+      description: Get user notes and highlights
+    - id: logos.credits
+      entry: "logos.tools.credits:handler"
+      description: Check feature credit usage
+    - id: logos.auth_status
+      entry: "logos.tools.auth_status:handler"
+      description: Check Logos authentication status
+    - id: logos.diagnose
+      entry: "logos.tools.diagnose:handler"
+      description: Comprehensive auth diagnostic across all layers (file, jar, cache, live check)
+    - id: logos.ingest_book
+      entry: "logos.tools.ingest_book:handler"
+      description: Ingest a Logos book via articles API with verse-boundary chunking
+    - id: logos.ingest_status
+      entry: "logos.tools.ingest_status:handler"
+      description: Check ingestion status for one or all Logos books
+    - id: logos.ingest_pdf
+      entry: "logos.tools.ingest_pdf:handler"
+      description: Ingest a PDF through core pipeline with verse-boundary chunking
+    - id: logos.search_scholars
+      entry: "logos.tools.search_scholars:handler"
+      description: Search scholar authority records
+    - id: logos.gap_analysis
+      entry: "logos.tools.gap_analysis:handler"
+      description: Analyze gaps between ranked scholars and owned resources
+    - id: logos.record_authority
+      entry: "logos.tools.record_authority:handler"
+      description: Record scholar authority score
+
+  filter_extensions:
+    - id: scripture_ref_range
+      entry: "logos.filters:ScriptureRefRangeFilter"
+      description: "Filter passages by scripture reference range (e.g., Gen 1:1 to Gen 3:24)"
+
+  extraction_schemas:
+    - id: scripture_cross_refs
+      version: 1
+      file: schemas/extraction_schemas/scripture_cross_refs.yaml
