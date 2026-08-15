@@ -15,9 +15,11 @@ from typing import Any
 import httpx
 
 from logos.auth.manager import (
+    ensure_session_keeper,
     get_cookie_header,
     refresh_auth,
 )
+from logos.auth.playwright_login import profile_seeded
 from logos.lib.constants import BASE_URL
 from logos.lib.logger import log, log_debug
 
@@ -66,9 +68,34 @@ class LogosClient:
         body: Any = None,
         stream: bool = False,
     ) -> Any:
+        # Kick off the background session keeper on first authenticated call.
+        ensure_session_keeper()
+
         cookie = get_cookie_header()
         if not cookie:
-            raise RuntimeError("Not authenticated. Run the Logos auth flow to log in.")
+            # No stored session. Only worth a silent renewal if the SSO profile
+            # has actually been seeded by a prior login — otherwise spinning up a
+            # headless browser just to fail ~30s later looks like a hang. When
+            # nothing is seeded, fail fast with actionable guidance.
+            if not profile_seeded():
+                raise RuntimeError(
+                    "Not authenticated. Run 'logos-login' to sign in once "
+                    "(seeds the SSO profile for silent renewals)."
+                )
+            try:
+                new_jar = await refresh_auth(interactive=False)
+                cookie = new_jar.header_value(f"{self.base_url}{path}")
+            except Exception as auth_err:
+                raise RuntimeError(
+                    "Not authenticated. Run 'logos-login' to sign in once "
+                    f"(seeds the SSO profile for silent renewals). ({auth_err})"
+                ) from auth_err
+            if not cookie:
+                # Renewal succeeded but produced no cookie matching this host.
+                raise RuntimeError(
+                    "Not authenticated: session renewal produced no usable cookie. "
+                    "Run 'logos-login'."
+                )
 
         url = f"{self.base_url}{path}"
         has_body = body is not None
@@ -83,20 +110,30 @@ class LogosClient:
         client = await self._get_client()
         response = await client.request(method, url, **kwargs)
 
-        # 401 → re-auth → retry once.
-        # refresh_auth() handles the cache + file clear internally; no need
-        # to call invalidate_auth/logout beforehand.
+        # 401 → re-auth → retry once. refresh_auth is non-destructive (obtains a
+        # fresh session before replacing the stored one), so we do NOT clear
+        # cookies first: a failed renewal must not wipe a still-valid session
+        # over a transient 401. interactive=False — never open a browser from a
+        # running server; the keeper / CLI handle re-seeding the SSO profile.
         if response.status_code == 401:
             log("Got 401, attempting re-authentication...")
             try:
-                new_jar = await refresh_auth()
+                new_jar = await refresh_auth(interactive=False)
                 new_cookie = new_jar.header_value(url)
+                if not new_cookie:
+                    # Renewal reported success but captured no cookie for this
+                    # host (e.g. only an auth.faithlife.com cookie). Retrying
+                    # would just send an unauthenticated request — surface the
+                    # actionable error instead.
+                    raise RuntimeError(
+                        "re-authentication produced no usable cookie for this host"
+                    )
                 headers = self._headers(new_cookie, has_body=has_body)
                 kwargs["headers"] = headers
                 response = await client.request(method, url, **kwargs)
             except Exception as auth_err:
                 raise RuntimeError(
-                    f"Authentication failed. Run the Logos auth flow manually. ({auth_err})"
+                    f"Authentication failed. Run 'logos-login' manually. ({auth_err})"
                 ) from auth_err
 
         response.raise_for_status()

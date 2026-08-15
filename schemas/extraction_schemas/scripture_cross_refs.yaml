@@ -1,0 +1,30 @@
+name: scripture_cross_refs
+version: 1
+description: Extract scripture cross-references from passage text
+record_type: scripture_cross_ref
+
+fields:
+  - name: source_reference
+    type: string
+    description: The Bible reference being discussed in this passage
+  - name: cross_references
+    type: array
+    items:
+      type: object
+      properties:
+        reference:
+          type: string
+          description: The cross-referenced Bible passage
+        relationship:
+          type: string
+          enum: [parallel, allusion, quotation, typology, fulfillment, contrast]
+          description: Type of cross-reference relationship
+        confidence:
+          type: number
+          description: Confidence score 0-1
+
+prompt: |
+  Extract scripture cross-references from this commentary passage.
+  For each reference discussed, identify related passages and classify
+  the relationship type (parallel, allusion, quotation, typology,
+  fulfillment, or contrast).

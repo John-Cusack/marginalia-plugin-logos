@@ -6,10 +6,10 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
-# Faithlife SSO has rotated cookie names over time. Check for the current name
-# first (`auth2` as of 2026-05), but accept the legacy `auth` so saved jars
-# from older logins keep working.
-_AUTH_COOKIE_NAMES: tuple[str, ...] = ("auth2", "auth")
+# Faithlife SSO has rotated cookie names over time. Check for the current names
+# first — `auth2` (app.logos.com) and `auth-services` (auth.faithlife.com) — but
+# accept the legacy `auth` so saved jars from older logins keep working.
+_AUTH_COOKIE_NAMES: tuple[str, ...] = ("auth2", "auth", "auth-services")
 
 
 def _domain_matches(cookie_domain: str, target_host: str) -> bool:
@@ -55,3 +55,17 @@ class LogosCookieJar(BaseModel):
                 if c.name == name and c.value:
                     return c
         return None
+
+    @property
+    def auth_cookies(self) -> list[LogosCookie]:
+        """All session-bearing cookies present in the jar."""
+        return [c for c in self.cookies if c.name in _AUTH_COOKIE_NAMES and c.value]
+
+    def min_auth_expiry(self) -> float | None:
+        """Earliest real expiry among auth cookies, or None if all are session cookies.
+
+        Used by the session keeper to decide when a proactive silent renewal is
+        due, before the session actually lapses.
+        """
+        expiries = [c.expires for c in self.auth_cookies if c.expires and c.expires > 0]
+        return min(expiries) if expiries else None
