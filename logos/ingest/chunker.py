@@ -6,15 +6,20 @@ import re
 
 from research_engine.domain.passages import PassageDraft
 from research_engine.plugins.sdk.interfaces import Chunker
-from research_engine.services.ingestion.chunking.fixed_window import split_at_boundary
+from research_engine.services.ingestion.chunking.fixed_window import (
+    cap_spans,
+    split_at_boundary,
+)
+from research_engine.services.text.tokens import (
+    approx_tokens,
+    chars_per_token,
+    token_budget_chars,
+)
 
 from logos.ingest.scripture_refs import extract_scripture_refs
 
 MAX_CHUNK_TOKENS = 500
 OVERLAP_TOKENS = 50
-CHARS_PER_TOKEN = 4
-MAX_CHUNK_CHARS = MAX_CHUNK_TOKENS * CHARS_PER_TOKEN
-OVERLAP_CHARS = OVERLAP_TOKENS * CHARS_PER_TOKEN
 
 VERSE_REF_PATTERN = re.compile(
     r"(?:^|\n)(?:\d+:\d+|\b(?:v|verse?|vs?)\.?\s*\d+)", re.IGNORECASE
@@ -40,7 +45,11 @@ class VerseChunker(Chunker):
     # one unbroken paragraph, so `research-engine doctor` found 95 passages here
     # over 1,200 tokens, the largest 9,243 characters. Passage boundaries change
     # for those resources; 2.0 passages of them are stale.
-    version = "3.0"
+    # 4.0: the cap is measured in real tokens. This chunker's whole reason to
+    # exist is Greek and Hebrew reference works, and 4 chars per token is an
+    # English constant — BDAG runs at 1.83 and HALOT at 1.50, so a "500 token"
+    # chunk of either held more than twice what it claimed.
+    version = "4.0"
 
     @property
     def max_passage_tokens(self) -> int | None:
@@ -50,14 +59,30 @@ class VerseChunker(Chunker):
         if not text.strip():
             return []
 
+        rate = chars_per_token(text)
         base_metadata = dict(metadata) if metadata else {}
+        # The budget comes from the article's average density; `cap_spans` then
+        # re-splits the spans where that average was optimistic — a BDAG entry
+        # is mostly Latin apparatus by character count and mostly Greek by token
+        # cost, so the two differ by more than a factor of two.
+        spans = _chunk_spans(
+            text,
+            token_budget_chars(MAX_CHUNK_TOKENS, rate),
+            token_budget_chars(OVERLAP_TOKENS, rate),
+        )
         return [
-            self._make_draft(text, start, end, position, base_metadata)
-            for position, (start, end) in enumerate(_chunk_spans(text))
+            self._make_draft(text, start, end, position, base_metadata, rate)
+            for position, (start, end) in enumerate(spans)
         ]
 
     def _make_draft(
-        self, text: str, start: int, end: int, position: int, base_metadata: dict
+        self,
+        text: str,
+        start: int,
+        end: int,
+        position: int,
+        base_metadata: dict,
+        rate: float,
     ) -> PassageDraft:
         chunk_text = text[start:end]
         scripture_refs = extract_scripture_refs(chunk_text)
@@ -68,7 +93,7 @@ class VerseChunker(Chunker):
             char_start=start,
             char_end=end,
             text=chunk_text,
-            token_count=_approx_tokens(chunk_text),
+            token_count=approx_tokens(chunk_text, rate),
             chunker=self.id,
             chunker_version=self.version,
             metadata=chunk_metadata,
@@ -89,20 +114,33 @@ def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
     return start, end
 
 
-def _chunk_spans(text: str) -> list[tuple[int, int]]:
-    """Chunk spans over *text*, verse-section first and paragraph-split if long."""
+def _chunk_spans(
+    text: str, max_chars: int, overlap_chars: int
+) -> list[tuple[int, int]]:
+    """Chunk spans over *text*, verse-section first and paragraph-split if long.
+
+    *max_chars* and *overlap_chars* are the token budgets converted for this
+    text's script, so the same call yields ~500-token chunks in Greek as in
+    English rather than ~500-token chunks of English and ~1,100 of Greek.
+    """
     base: list[tuple[int, int]] = []
     for section_start, section_end in _verse_section_spans(text):
-        if section_end - section_start <= MAX_CHUNK_CHARS:
+        if section_end - section_start <= max_chars:
             base.append((section_start, section_end))
         else:
-            base.extend(_paragraph_spans(text, section_start, section_end))
+            base.extend(_paragraph_spans(text, section_start, section_end, max_chars))
+
+    # Capping happens here, on spans that do not yet overlap. Doing it after the
+    # overlap pass below reorders the result: a widened span reaches back behind
+    # the sub-spans an earlier one was just cut into, and the contract's
+    # "spans go backwards" assertion is what caught that.
+    base = cap_spans(text, base, MAX_CHUNK_TOKENS)
 
     spans: list[tuple[int, int]] = []
     for i, (start, end) in enumerate(base):
         if i > 0:
             # Overlap: reach back into the preceding text rather than copying it.
-            start = max(0, start - OVERLAP_CHARS)
+            start = max(0, start - overlap_chars)
             if spans:
                 # Keep starts strictly increasing so chunks stay distinguishable.
                 start = max(start, spans[-1][0] + 1)
@@ -131,7 +169,9 @@ def _verse_section_spans(text: str) -> list[tuple[int, int]]:
     return spans or [(0, len(text))]
 
 
-def _paragraph_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
+def _paragraph_spans(
+    text: str, start: int, end: int, max_chars: int
+) -> list[tuple[int, int]]:
     """Split a long region into paragraph-aligned spans under the size cap."""
     region = text[start:end]
     paragraphs: list[tuple[int, int]] = []
@@ -146,7 +186,7 @@ def _paragraph_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
     for para_start, para_end in paragraphs:
         if current is None:
             current = (para_start, para_end)
-        elif para_end - current[0] > MAX_CHUNK_CHARS:
+        elif para_end - current[0] > max_chars:
             spans.append(current)
             current = (para_start, para_end)
         else:
@@ -161,11 +201,9 @@ def _paragraph_spans(text: str, start: int, end: int) -> list[tuple[int, int]]:
     absolute = [
         piece
         for s, e in spans
-        for piece in split_at_boundary(region, s, e, MAX_CHUNK_CHARS)
+        for piece in split_at_boundary(region, s, e, max_chars)
     ]
 
     return [(start + s, start + e) for s, e in absolute]
 
 
-def _approx_tokens(text: str) -> int:
-    return max(1, len(text) // CHARS_PER_TOKEN)
