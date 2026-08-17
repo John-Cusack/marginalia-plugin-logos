@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # This pack's tests import `research_engine` — the chunker is held to the
+      # engine's published chunker contract, which is the point of the contract
+      # being published. `tests/conftest.py` finds it by walking up to a sibling
+      # `MarginaliaAI` directory, so both repos are checked out side by side to
+      # reproduce the layout a developer has locally. Checking out only this
+      # repo would not fail loudly: conftest guards on `.exists()`, so the path
+      # would simply not be added and the contract test would error on import.
+      - name: Check out the pack
+        uses: actions/checkout@v4
+        with:
+          path: marginalia-plugin-logos
+
+      - name: Check out the engine (sibling, for research_engine)
+        uses: actions/checkout@v4
+        with:
+          repository: John-Cusack/MarginaliaAI
+          path: MarginaliaAI
+          # Only needed while the engine repo is private; a fine-grained PAT
+          # with read access to it, stored as a secret on this repo.
+          token: ${{ secrets.CORE_REPO_TOKEN || github.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        working-directory: marginalia-plugin-logos
+        run: uv sync --extra dev
+
+      - name: Confirm the engine is importable
+        working-directory: marginalia-plugin-logos
+        # Fail here, with a clear message, rather than letting the contract
+        # test error on import and read as a pack bug.
+        run: |
+          uv run python -c "
+          import sys, pathlib
+          core = pathlib.Path('..').resolve() / 'MarginaliaAI' / 'packages' / 'core' / 'src'
+          assert core.exists(), f'engine checkout missing at {core}'
+          sys.path.insert(0, str(core))
+          import research_engine.testing.chunker_contract as c
+          print('chunker contract importable:', c.ABSOLUTE_MAX_TOKENS, 'token ceiling')
+          "
+
+      - name: Unit tests
+        working-directory: marginalia-plugin-logos
+        run: uv run pytest tests/unit -q
