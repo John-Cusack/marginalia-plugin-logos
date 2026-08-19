@@ -119,6 +119,11 @@ async def test_store_with_retry_success():
 
     doc_id = uuid4()
     mock_ingestion = AsyncMock()
+    # Nothing reached the corpus in this scenario, so the idempotency check
+    # that guards against re-storing a batch that actually landed must say so.
+    # Left as a bare AsyncMock it returns a truthy sentinel, and every failure
+    # here would read as "already stored".
+    mock_ingestion.find_existing.return_value = []
     mock_ingestion.ingest_drafts.return_value = {
         "document_id": str(doc_id),
         "passage_count": 3,
@@ -156,6 +161,11 @@ async def test_store_with_retry_halves_on_failure():
         return {"document_id": str(doc_id), "passage_count": len(drafts)}
 
     mock_ingestion = AsyncMock()
+    # Nothing reached the corpus in this scenario, so the idempotency check
+    # that guards against re-storing a batch that actually landed must say so.
+    # Left as a bare AsyncMock it returns a truthy sentinel, and every failure
+    # here would read as "already stored".
+    mock_ingestion.find_existing.return_value = []
     mock_ingestion.ingest_drafts.side_effect = mock_ingest_drafts
 
     rows = [_make_chunk_row(i) for i in range(10)]
@@ -182,6 +192,11 @@ async def test_store_with_retry_permanent_failure():
     from logos.tools.ingest_book import _store_with_retry
 
     mock_ingestion = AsyncMock()
+    # Nothing reached the corpus in this scenario, so the idempotency check
+    # that guards against re-storing a batch that actually landed must say so.
+    # Left as a bare AsyncMock it returns a truthy sentinel, and every failure
+    # here would read as "already stored".
+    mock_ingestion.find_existing.return_value = []
     mock_ingestion.ingest_drafts.side_effect = RuntimeError("CUDA out of memory")
 
     rows = [_make_chunk_row(i) for i in range(3)]  # Below MIN_BATCH_SIZE
@@ -203,6 +218,11 @@ async def test_store_with_retry_max_depth():
     from logos.tools.ingest_book import MAX_RETRY_DEPTH, _store_with_retry
 
     mock_ingestion = AsyncMock()
+    # Nothing reached the corpus in this scenario, so the idempotency check
+    # that guards against re-storing a batch that actually landed must say so.
+    # Left as a bare AsyncMock it returns a truthy sentinel, and every failure
+    # here would read as "already stored".
+    mock_ingestion.find_existing.return_value = []
     mock_ingestion.ingest_drafts.side_effect = RuntimeError("CUDA out of memory")
 
     # Large batch but at max depth already
@@ -235,6 +255,11 @@ async def test_store_with_retry_recursive_halving():
         return {"document_id": str(doc_id), "passage_count": len(drafts)}
 
     mock_ingestion = AsyncMock()
+    # Nothing reached the corpus in this scenario, so the idempotency check
+    # that guards against re-storing a batch that actually landed must say so.
+    # Left as a bare AsyncMock it returns a truthy sentinel, and every failure
+    # here would read as "already stored".
+    mock_ingestion.find_existing.return_value = []
     mock_ingestion.ingest_drafts.side_effect = mock_ingest_drafts
 
     rows = [_make_chunk_row(i) for i in range(50)]
@@ -1004,3 +1029,80 @@ async def test_repeated_article_ids_are_not_double_counted():
         await _rebase_offsets("res", "b0000", rows, drafts)
 
     assert mock_get.call_args[0][1] == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_raises_after_landing_is_not_stored_twice():
+    """The bug that duplicated a whole book.
+
+    `ingest_drafts` succeeded and the document was committed, then the
+    bookkeeping after it raised. That exception was read as "the store failed",
+    so the batch was halved and both halves written as fresh documents beside
+    the parent that had already landed.
+
+    The result was "Blessed Are the Peacemakers" stored twice — 7 parent
+    batches and 14 halves, 1,377 duplicated passages — and it was invisible
+    except as every search returning each result two ways.
+    """
+    from logos.tools.ingest_book import _store_with_retry
+
+    doc_id = uuid4()
+    calls = 0
+
+    async def store(**kwargs):
+        nonlocal calls
+        calls += 1
+        # Landed, then failed on the way out.
+        raise RuntimeError("connection reset while reading the response")
+
+    mock_ingestion = AsyncMock()
+    mock_ingestion.ingest_drafts.side_effect = store
+    mock_ingestion.find_existing.return_value = [{"document_id": str(doc_id)}]
+
+    rows = [_make_chunk_row(i) for i in range(10)]
+
+    with (
+        patch("logos.tools.ingest_book.mark_chunks_stored", new_callable=AsyncMock) as stored,
+        patch("logos.tools.ingest_book.mark_chunks_failed", new_callable=AsyncMock),
+        patch("logos.tools.ingest_book.reassign_chunk_batch_keys", new_callable=AsyncMock) as reassign,
+    ):
+        result = await _store_with_retry(
+            "test-resource", "b0000", rows, mock_ingestion,
+            {"resource_id": "test-resource"}, "Test Book",
+        )
+
+    assert calls == 1, f"retried a store that had already landed ({calls} attempts)"
+    assert not reassign.called, "halved a batch that was already in the corpus"
+    assert result == {"stored": 10, "failed": 0, "batch_key": "b0000"}
+    stored.assert_called_once_with("test-resource", "b0000", doc_id)
+
+
+@pytest.mark.asyncio
+async def test_checkpointing_failure_does_not_undo_a_successful_store():
+    """The passages are in the corpus; re-running to fix a checkpoint row is
+    what created duplicates in the first place."""
+    from logos.tools.ingest_book import _store_with_retry
+
+    doc_id = uuid4()
+    mock_ingestion = AsyncMock()
+    mock_ingestion.find_existing.return_value = []
+    mock_ingestion.ingest_drafts.return_value = {"document_id": str(doc_id)}
+
+    rows = [_make_chunk_row(i) for i in range(6)]
+
+    with (
+        patch(
+            "logos.tools.ingest_book.mark_chunks_stored",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("checkpoint table is unreachable"),
+        ),
+        patch("logos.tools.ingest_book.reassign_chunk_batch_keys", new_callable=AsyncMock) as reassign,
+    ):
+        result = await _store_with_retry(
+            "test-resource", "b0000", rows, mock_ingestion,
+            {"resource_id": "test-resource"}, "Test Book",
+        )
+
+    assert result["stored"] == 6
+    assert mock_ingestion.ingest_drafts.await_count == 1
+    assert not reassign.called, "a checkpoint failure must not re-store the batch"

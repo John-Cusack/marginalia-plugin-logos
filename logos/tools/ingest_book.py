@@ -793,25 +793,39 @@ async def _store_with_retry(
     document_text = await _rebase_offsets(resource_id, batch_key, chunk_rows, drafts)
 
     batch_title = f"{resource_title} (batch {batch_key})"
+    source = f"logos:{resource_id}:batch:{batch_key}"
+
+    # Only the store itself is retryable. The bookkeeping that follows it used
+    # to sit inside this `try`, so a failure *after* a successful store — the
+    # response parse, or the checkpoint write — was read as "the store failed"
+    # and the halves were written as fresh documents beside the parent that had
+    # already landed. That is how "Blessed Are the Peacemakers" came to exist
+    # twice: 7 parent batches and 14 halves, 1,377 duplicated passages, every
+    # search against it returning each result two ways.
     try:
         result = await ingestion.ingest_drafts(
             title=batch_title,
             document_type="logos_book",
             passage_drafts=drafts,
-            source=f"logos:{resource_id}:batch:{batch_key}",
+            source=source,
             metadata=doc_metadata,
             full_text=document_text,
         )
-        doc_id = UUID(result["document_id"]) if isinstance(result.get("document_id"), str) else result.get("document_id")
-        await mark_chunks_stored(resource_id, batch_key, doc_id)
-        log(f"Batch {batch_key}: stored {count} passages "
-            f"(document {result.get('document_id')})")
-        return {"stored": count, "failed": 0, "batch_key": batch_key}
-
     except Exception as e:
         error_msg = str(e)
         log(f"Batch {batch_key}: failed to store {count} passages "
             f"(depth={depth}): {error_msg}")
+
+        # An exception does not prove nothing was written. Ask the corpus
+        # before duplicating into it: retrying a store that actually succeeded
+        # is worse than not retrying at all, because the damage is silent and
+        # only shows up as doubled search results months later.
+        landed = await ingestion.find_existing(source=source)
+        if landed:
+            log(f"Batch {batch_key}: store reported failure but the document "
+                f"is present; treating as stored rather than duplicating it")
+            await _record_stored(resource_id, batch_key, landed[0].get("document_id"))
+            return {"stored": count, "failed": 0, "batch_key": batch_key}
 
         # Can we halve?
         if count > MIN_BATCH_SIZE and depth < MAX_RETRY_DEPTH:
@@ -855,6 +869,23 @@ async def _store_with_retry(
             await mark_chunks_failed(resource_id, batch_key, error_msg)
             log(f"Batch {batch_key}: permanently failed {count} passages")
             return {"stored": 0, "failed": count, "batch_key": batch_key}
+
+    # Stored. Bookkeeping failures from here are logged and swallowed: the
+    # passages are in the corpus, and re-running the batch to fix a checkpoint
+    # row is what created duplicates in the first place.
+    await _record_stored(resource_id, batch_key, result.get("document_id"))
+    log(f"Batch {batch_key}: stored {count} passages "
+        f"(document {result.get('document_id')})")
+    return {"stored": count, "failed": 0, "batch_key": batch_key}
+
+
+async def _record_stored(resource_id: str, batch_key: str, document_id) -> None:
+    """Checkpoint a stored batch, never raising into the store path."""
+    try:
+        doc_id = UUID(document_id) if isinstance(document_id, str) else document_id
+        await mark_chunks_stored(resource_id, batch_key, doc_id)
+    except Exception as e:  # noqa: BLE001 - the passages are safely stored
+        log(f"Batch {batch_key}: stored, but checkpointing it failed: {e}")
 
 
 # Per-batch store timeout. One hung batch shouldn't take down the whole
