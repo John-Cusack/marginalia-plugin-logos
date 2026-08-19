@@ -50,6 +50,11 @@ from logos.parsers.html_to_markdown import html_to_markdown_with_refs
 STORE_BATCH_SIZE = 100
 
 # Retry settings for transient article-fetch failures.
+#: How far back the walk will rewind looking for the first article. A book
+#: root can sit deep inside a long reference work, and the rewind costs one
+#: request per step, so it is bounded rather than open-ended.
+_MAX_REWIND = 2_000
+
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds, doubled each retry
 
@@ -279,6 +284,40 @@ def _next_toc_article(toc_ids: list[str], failed_id: str) -> str | None:
     return None
 
 
+async def _first_article(resource_id: str, from_article_id: str | None) -> str | None:
+    """Follow ``previousArticleId`` back to the article that has none.
+
+    The book root hands back the reader's last-read position, so a walk that
+    starts there silently omits everything before it. Only the article chain
+    knows where a book begins: the first article is the one with no previous.
+
+    Bounded by ``_MAX_REWIND`` and by a seen-set, so a cyclic or unbounded
+    chain gives up and leaves the caller to start where it already was.
+    """
+    if not from_article_id:
+        return None
+    current = from_article_id
+    seen: set[str] = set()
+    for _ in range(_MAX_REWIND):
+        if current in seen:
+            log(f"Rewind hit a cycle at {current}; starting there")
+            return current
+        seen.add(current)
+        try:
+            data = await logos_client.get(
+                f"/api/app/books/{quote(resource_id)}/articles/{quote(current)}"
+            )
+        except Exception as e:
+            log(f"Rewind stopped at {current}: {e}")
+            return current
+        previous = data.get("previousArticleId")
+        if previous is None:
+            return current
+        current = previous
+    log(f"Rewind hit the {_MAX_REWIND}-article limit; starting at {current}")
+    return current
+
+
 async def _recover_by_parent(resource_id: str, failed_id: str) -> str | None:
     """Try trimming the last component of a failed article ID to find a parent.
 
@@ -451,6 +490,11 @@ async def _walk_impl(
     except Exception as e:
         log(f"Failed to fetch/walk TOC: {e}")
 
+    # Ordered TOC article IDs: the book's own running order. Used to choose
+    # where to start, to recover from a broken chain, and to check afterwards
+    # that the walk actually covered the book.
+    toc_article_ids: list[str] = [n.id for n in toc_nodes if n.id] if toc_nodes else []
+
     # 3. Determine starting point (resume or fresh start)
     resumed_from: str | None = None
     article_index = 0
@@ -471,19 +515,34 @@ async def _walk_impl(
             log(f"Failed to fetch resume article {resumed_from}: {e}")
             article_id = None
     else:
-        # Fresh start: the book root response (already fetched as `data`) has
-        # the same shape as an article fetch and contains the first article
-        # plus its nextArticleId. Use it directly — this avoids the broken
-        # assumption that 'TITLE' is always a valid article id (e.g. HALOT
-        # uses 'KB4.TRANS' as its first article).
-        preloaded_data = data
+        # Fresh start. The book root response (already fetched as `data`) has
+        # the same shape as an article fetch and carries an article plus its
+        # nextArticleId — but the article it carries is wherever the *reader*
+        # last was, not the top of the book. Walking from there follows
+        # nextArticleId to the end and stops, so everything before that point
+        # is never fetched, and nothing fails: the walk reported "complete".
+        #
+        # *Four Views on Eternal Security* came in that way. The root pointed
+        # at CH4.7.3.3, so the walk collected three sections and the glossary
+        # — 22 articles, 15,826 characters of a whole book.
+        #
+        # `previousArticleId` is what settles it: the first article of a book
+        # is the one that has none. The TOC cannot answer this, because its
+        # entry IDs are not always article IDs — this book's are byte offsets
+        # ("1~47461"), and starting from one returns 404.
         first_article = data.get("article") or {}
-        article_id = first_article.get("articleId") or "FIRST"
-
-    # Build ordered TOC article-ID list for chain-break recovery
-    toc_article_ids: list[str] = []
-    if toc_nodes:
-        toc_article_ids = [n.id for n in toc_nodes if n.id]
+        root_article_id = first_article.get("articleId")
+        article_id = root_article_id or "FIRST"
+        if data.get("previousArticleId") is None:
+            # The root really is the top of the book; reuse its payload.
+            preloaded_data = data
+        else:
+            article_id = (
+                await _first_article(resource_id, root_article_id) or root_article_id
+            )
+            log(f"Book root points at {root_article_id} (the last-read "
+                f"position); walked back to {article_id} to start from the "
+                f"beginning")
 
     # 4. Walk articles sequentially via nextArticleId chain
     chunker = VerseChunker()
@@ -664,10 +723,24 @@ async def _walk_impl(
         partial_key = f"b{batch_number:04d}"
         await _enqueue_or_abort(batch_queue, partial_key, sibling)
 
+    # Did the walk actually cover the book? Reaching the end of the
+    # nextArticleId chain only proves the walk ran out of chain, not that it
+    # started at the top: a walk beginning mid-book ends cleanly having missed
+    # everything before it. The TOC is the independent record of what the book
+    # contains, so it is what "complete" is measured against.
+    missed_toc_articles = [
+        toc_id for toc_id in toc_article_ids if toc_id not in visited
+    ]
+    if missed_toc_articles:
+        log(f"Walk reached the end of the chain but {len(missed_toc_articles)} "
+            f"of {len(toc_article_ids)} TOC articles were never visited "
+            f"(first: {', '.join(missed_toc_articles[:5])})")
+
     # Mark walk complete
-    walk_complete = article_id is None or (
-        max_articles > 0 and total_articles >= max_articles
-    )
+    walk_complete = (
+        article_id is None
+        or (max_articles > 0 and total_articles >= max_articles)
+    ) and not missed_toc_articles
     await upsert_ingest_progress(
         resource_id=resource_id,
         title=resource_title,
@@ -691,6 +764,7 @@ async def _walk_impl(
         f"process {process_elapsed:.1f}s avg {process_ms_avg:.0f}ms)")
 
     return {
+        "missed_toc_articles": missed_toc_articles,
         "resource_id": resource_id,
         "resource_title": resource_title,
         "toc_entries": toc_node_count,
