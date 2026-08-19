@@ -19,6 +19,7 @@ from uuid import UUID
 
 import httpx
 
+from research_engine.domain.errors import EmbeddingUnavailable
 from research_engine.domain.passages import PassageDraft
 from research_engine.plugins.sdk import tool
 
@@ -728,9 +729,22 @@ async def _walk_impl(
     # started at the top: a walk beginning mid-book ends cleanly having missed
     # everything before it. The TOC is the independent record of what the book
     # contains, so it is what "complete" is measured against.
-    missed_toc_articles = [
-        toc_id for toc_id in toc_article_ids if toc_id not in visited
-    ]
+    #
+    # Only when the TOC speaks the same ID space as the articles. Some books
+    # index their TOC by byte offset ("1~47461"), and comparing those against
+    # visited article IDs reports every entry missing on a walk that in fact
+    # covered the whole book. No overlap at all means the TOC cannot answer
+    # this question, not that the walk failed.
+    toc_ids_are_article_ids = any(toc_id in visited for toc_id in toc_article_ids)
+    missed_toc_articles = (
+        [toc_id for toc_id in toc_article_ids if toc_id not in visited]
+        if toc_ids_are_article_ids
+        else []
+    )
+    if toc_article_ids and not toc_ids_are_article_ids:
+        log(f"TOC entries are not article IDs for this book "
+            f"(e.g. {toc_article_ids[0]}), so completeness is measured by "
+            f"reaching the start and end of the article chain")
     if missed_toc_articles:
         log(f"Walk reached the end of the chain but {len(missed_toc_articles)} "
             f"of {len(toc_article_ids)} TOC articles were never visited "
@@ -884,6 +898,16 @@ async def _store_with_retry(
             metadata=doc_metadata,
             full_text=document_text,
         )
+    except EmbeddingUnavailable:
+        # Halving answers "this batch was too big". It cannot answer "the
+        # embedding backend is not there", and splitting 50 passages into
+        # 6+6+6+7+... against a host that is switched off just makes the same
+        # call sixteen times. The walk's checkpointed chunks survive, so the
+        # storage phase resumes once embedding is back.
+        log(f"Batch {batch_key}: embedding is unavailable — stopping rather "
+            f"than halving. The checkpointed chunks are kept; re-run this "
+            f"book once the embedding server is reachable.")
+        raise
     except Exception as e:
         error_msg = str(e)
         log(f"Batch {batch_key}: failed to store {count} passages "

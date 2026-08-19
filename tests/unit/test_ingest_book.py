@@ -1106,3 +1106,44 @@ async def test_checkpointing_failure_does_not_undo_a_successful_store():
     assert result["stored"] == 6
     assert mock_ingestion.ingest_drafts.await_count == 1
     assert not reassign.called, "a checkpoint failure must not re-store the batch"
+
+
+@pytest.mark.asyncio
+async def test_store_does_not_halve_when_embedding_is_gone():
+    """Halving answers "too big". It cannot answer "the backend is not there".
+
+    A real run split 50 passages into 25, 12, 6, 6, 13, 6, 7 against an
+    embedding host that had been switched off for three days, making the same
+    failing call sixteen times. The walk's checkpointed chunks survive either
+    way, so the useful behaviour is to stop and let the storage phase resume
+    once embedding is reachable.
+    """
+    from research_engine.domain.errors import EmbeddingUnavailable
+
+    from logos.tools.ingest_book import _store_with_retry
+
+    call_count = 0
+
+    async def mock_ingest_drafts(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise EmbeddingUnavailable("Cannot reach the embedding server")
+
+    mock_ingestion = AsyncMock()
+    mock_ingestion.find_existing.return_value = []
+    mock_ingestion.ingest_drafts.side_effect = mock_ingest_drafts
+
+    rows = [_make_chunk_row(i) for i in range(50)]
+
+    with (
+        patch("logos.tools.ingest_book.mark_chunks_stored", new_callable=AsyncMock),
+        patch("logos.tools.ingest_book.mark_chunks_failed", new_callable=AsyncMock),
+        patch("logos.tools.ingest_book.reassign_chunk_batch_keys", new_callable=AsyncMock),
+        pytest.raises(EmbeddingUnavailable),
+    ):
+        await _store_with_retry(
+            "test-resource", "b0000", rows, mock_ingestion,
+            {"resource_id": "test-resource"}, "Test Book",
+        )
+
+    assert call_count == 1, f"halved into {call_count} attempts instead of stopping"
