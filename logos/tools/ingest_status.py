@@ -74,7 +74,6 @@ async def handler(resource_id: str = "", **kwargs) -> dict:
             )
             books = []
             for r in rows:
-                total = r["pending"] + r["stored"] + r["failed"]
                 books.append({
                     "resource_id": r["resource_id"],
                     "title": r["resource_title"],

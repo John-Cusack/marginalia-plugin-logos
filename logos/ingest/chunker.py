@@ -49,7 +49,12 @@ class VerseChunker(Chunker):
     # exist is Greek and Hebrew reference works, and 4 chars per token is an
     # English constant — BDAG runs at 1.83 and HALOT at 1.50, so a "500 token"
     # chunk of either held more than twice what it claimed.
-    version = "4.0"
+    # 5.0: a scripture index is not 600 boundaries. Every line of one opens with
+    # a verse reference, so each became its own section and the overlap pass
+    # widened it past its own length — 844 passages from 38,042 characters, at
+    # 89% overlap. The engine contract now bounds output amplification, which is
+    # the check that was missing when 4.0 shipped.
+    version = "5.0"
 
     @property
     def max_passage_tokens(self) -> int | None:
@@ -123,8 +128,12 @@ def _chunk_spans(
     text's script, so the same call yields ~500-token chunks in Greek as in
     English rather than ~500-token chunks of English and ~1,100 of Greek.
     """
+    # Merge before splitting: a verse reference opens every line of a scripture
+    # index, so the raw sections there are a single row apiece.
+    sections = _merge_index_sections(text, _verse_section_spans(text), max_chars)
+
     base: list[tuple[int, int]] = []
-    for section_start, section_end in _verse_section_spans(text):
+    for section_start, section_end in sections:
         if section_end - section_start <= max_chars:
             base.append((section_start, section_end))
         else:
@@ -139,8 +148,12 @@ def _chunk_spans(
     spans: list[tuple[int, int]] = []
     for i, (start, end) in enumerate(base):
         if i > 0:
-            # Overlap: reach back into the preceding text rather than copying it.
-            start = max(0, start - overlap_chars)
+            # Overlap: reach back into the preceding text rather than copying it,
+            # and never reach back further than half of what this span already
+            # holds. Overlap is meant to carry context across a boundary; past
+            # that it is restating the passage, and every restatement is stored,
+            # embedded, and returned as its own search hit.
+            start = max(0, start - min(overlap_chars, (end - start) // 2))
             if spans:
                 # Keep starts strictly increasing so chunks stay distinguishable.
                 start = max(start, spans[-1][0] + 1)
@@ -148,6 +161,53 @@ def _chunk_spans(
         if end > start:
             spans.append((start, end))
     return spans
+
+
+#: A comment on a verse is at least a clause. An index entry is a reference and
+#: a page number. This is where the two part company.
+_MIN_COMMENT_CHARS = 40
+
+
+def _is_index_entry(text: str, start: int, end: int) -> bool:
+    """True when a section is a bare reference with nothing behind it.
+
+    Length alone cannot tell these apart — a two-line note on a verse is short
+    and is still a real boundary. What separates them is whether anything
+    follows the reference: ``3:16 For God so loved the world`` is a comment,
+    ``21:4\t249-250`` is an index row pointing at a page.
+    """
+    section = text[start:end]
+    match = VERSE_REF_PATTERN.match(section)
+    if match is None:
+        return False
+    return len(section[match.end() :].strip()) < _MIN_COMMENT_CHARS
+
+
+def _merge_index_sections(
+    text: str, spans: list[tuple[int, int]], max_chars: int
+) -> list[tuple[int, int]]:
+    """Join index rows into ordinary chunks instead of one passage each.
+
+    A verse reference at the head of a line is a real boundary in commentary —
+    it is what makes the note on a given verse addressable. A scripture index
+    opens every line with one, so each line became its own section and the
+    overlap pass widened it well past its own length: one 38,042-character
+    index became 844 passages, each restating about 89% of the one before it.
+
+    Sections are contiguous, so a merge is the first span's start with the
+    last one's end. Merging stops once the accumulated span reaches the budget.
+    """
+    merged: list[tuple[int, int]] = []
+    for span_start, span_end in spans:
+        if (
+            merged
+            and _is_index_entry(text, span_start, span_end)
+            and merged[-1][1] - merged[-1][0] < max_chars
+        ):
+            merged[-1] = (merged[-1][0], span_end)
+        else:
+            merged.append((span_start, span_end))
+    return merged
 
 
 def _verse_section_spans(text: str) -> list[tuple[int, int]]:

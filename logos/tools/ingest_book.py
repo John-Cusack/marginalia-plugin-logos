@@ -787,7 +787,6 @@ async def _store_with_retry(
     # per document (ingest_drafts creates one document per batch).
     for i, draft in enumerate(drafts):
         draft.position = i
-    chunk_ids = [row["id"] for row in chunk_rows]
     count = len(drafts)
 
     document_text = await _rebase_offsets(resource_id, batch_key, chunk_rows, drafts)
