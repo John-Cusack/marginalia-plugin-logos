@@ -1,30 +1,81 @@
-name: scripture_cross_refs
-version: 1
-description: Extract scripture cross-references from passage text
-record_type: scripture_cross_ref
+# Rewritten to the engine's extraction schema contract.
+#
+# The previous version was authored in a shape nothing read: `name` instead of
+# `id`, a single `record_type` string instead of a `record_types` list, fields
+# as a list of {name, type} instead of a mapping, no evidence span anywhere, and
+# a prompt that never interpolated the passage. It parsed as YAML and was
+# registered into the loader's in-memory registry, so nothing complained — and
+# it could not have executed under any version of the executor.
+#
+# One record per cross-reference rather than an array nested inside one record:
+# `extraction_records` stores a row per finding, and a row per finding is what
+# makes them queryable and individually citable.
 
-fields:
-  - name: source_reference
-    type: string
-    description: The Bible reference being discussed in this passage
-  - name: cross_references
-    type: array
-    items:
-      type: object
-      properties:
-        reference:
-          type: string
-          description: The cross-referenced Bible passage
-        relationship:
-          type: string
-          enum: [parallel, allusion, quotation, typology, fulfillment, contrast]
-          description: Type of cross-reference relationship
-        confidence:
-          type: number
-          description: Confidence score 0-1
+id: scripture_cross_refs
+version: 1
+owner: logos
+description: |
+  Cross-references between scripture passages as discussed in commentary —
+  which passage a commentator invokes alongside another, and what kind of
+  relation is being claimed.
+
+record_types:
+  - id: cross_reference
+    description: One claimed relation between two scripture passages
+    fields:
+      source_reference:
+        type: string
+        description: >
+          The passage this commentary is about, as a reference
+          (e.g. "Romans 3:21").
+        required: true
+      target_reference:
+        type: string
+        description: >
+          The passage it is being related to, as a reference
+          (e.g. "Habakkuk 2:4").
+        required: true
+      relationship:
+        type: enum
+        values: [parallel, allusion, quotation, typology, fulfillment, contrast]
+        description: The kind of relation the commentator is claiming.
+        required: true
+      quote:
+        type: evidence_span
+        description: >
+          The words in this passage that make the connection. Quote the
+          passage exactly, including its punctuation.
+        required: true
+      confidence:
+        type: number
+        range: [0, 1]
+        description: >
+          How firmly the passage asserts the relation. Use 0.9 and above only
+          when the commentator states it outright.
+        required: true
 
 prompt: |
-  Extract scripture cross-references from this commentary passage.
-  For each reference discussed, identify related passages and classify
-  the relationship type (parallel, allusion, quotation, typology,
-  fulfillment, or contrast).
+  You are reading a passage of biblical commentary and recording the
+  cross-references it draws between scripture passages.
+
+  Produce one `cross_reference` record for each distinct relation the passage
+  claims between two scripture references.
+
+  Rules:
+  - `quote` must reproduce the passage word for word. It is what allows the
+    record to be checked against the text later, so an approximation is worse
+    than no record at all.
+  - Record only relations the passage actually draws. A reference merely cited
+    in passing, with no relation claimed, is not a cross-reference.
+  - Choose the relationship type the commentator's own language supports:
+    `quotation` when one passage cites another verbatim, `allusion` when it
+    echoes without citing, `typology` when an earlier passage is read as
+    prefiguring a later one, `fulfillment` when the later is said to complete
+    the earlier, `parallel` for passages treated as saying the same thing, and
+    `contrast` where they are set against each other.
+  - Be conservative with confidence.
+
+  Passage:
+  """
+  {{ passage_text }}
+  """
