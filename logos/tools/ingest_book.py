@@ -20,19 +20,23 @@ from uuid import UUID
 import httpx
 
 from research_engine.domain.errors import EmbeddingUnavailable
+from research_engine.domain.nodes import build_node_tree
 from research_engine.domain.passages import PassageDraft
 from research_engine.plugins.sdk import tool
 
 from logos.db.migrate import run_migrations
 from logos.db.queries import (
+    get_all_pending_chunks,
     get_article_texts,
     get_chunks_for_batch,
     get_ingest_progress,
     get_max_batch_summary,
+    get_ordered_article_texts,
     get_pending_batch_keys,
     insert_chunks,
     mark_chunks_failed,
     mark_chunks_stored,
+    mark_resource_chunks_stored,
     reassign_chunk_batch_keys,
     reset_failed_chunks,
     save_article_text,
@@ -1080,6 +1084,201 @@ async def _store_batches(resource_id: str, ingestion) -> dict:
     )
 
 
+# ── Whole-book assembly ───────────────────────────────────────────────────────
+
+#: Longest node title kept. Lexicon entries run their whole gloss onto the
+#: first line, and a title is for recognising a place, not reading it.
+_TITLE_LIMIT = 90
+
+_MARKUP = re.compile(r"[*_`]+")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def _entry_title(text: str) -> str | None:
+    """The name an article should be cited by, taken from its own first line.
+
+    The staged TOC metadata cannot supply this: its ``title`` is the *section*
+    heading, and LSJ has thirty-seven of those across 188,724 articles — so
+    every entry in the lexicon would be cited as "I. Authors and Works".
+
+    The articles name themselves. A lexicon entry opens with its headword and
+    then declines it ("ἀλληλοκτονέω, *slay each other*, Hp.Ep.17"), so the text
+    up to the first comma is the headword and the rest is gloss. Prose sections
+    open with their own heading and carry no such comma, and keep the line.
+    """
+    first = _WHITESPACE.sub(" ", text.lstrip().split("\n", 1)[0]).strip()
+    first = _MARKUP.sub("", first).strip()
+    if not first:
+        return None
+
+    # Comma in the Greek lexica ("ἀλληλοκτονέω, *slay each other*"), colon in
+    # the Hebrew one ("זִיזָא: n.m."). Whichever comes first is the boundary.
+    cut = min(
+        (i for i in (first.find(","), first.find(":")) if i > 0),
+        default=-1,
+    )
+    head = first[:cut].strip() if cut > 0 else ""
+    # Only when the separator divides a headword from a gloss. A headword is a
+    # word, sometimes an inflected pair; punctuation inside a sentence ("In the
+    # following pages, which are...") is not a boundary, and cutting there
+    # yields a fragment rather than a name. Word count tells them apart.
+    if 1 < len(head) <= 60 and len(head) < len(first) and len(head.split()) <= 2:
+        return head
+
+    return first if len(first) <= _TITLE_LIMIT else first[:_TITLE_LIMIT].rstrip() + "…"
+
+
+def _assemble_book(
+    articles: list[tuple[str, str]],
+) -> tuple[str, dict[str, tuple[int, int]]]:
+    """Join a book's articles into one canonical text, keeping each one's span.
+
+    The same concatenation rule the per-batch path used, applied to the whole
+    book rather than a hundred articles at a time. Offsets are what make a
+    passage quotable, so this is the single place the arithmetic lives.
+    """
+    parts: list[str] = []
+    spans: dict[str, tuple[int, int]] = {}
+    cursor = 0
+    for article_id, text in articles:
+        spans[article_id] = (cursor, cursor + len(text))
+        parts.append(text)
+        cursor += len(text) + len(ARTICLE_SEPARATOR)
+    return ARTICLE_SEPARATOR.join(parts), spans
+
+
+def _book_sections(
+    articles: list[tuple[str, str]],
+    spans: dict[str, tuple[int, int]],
+    headings: dict[str, str | None],
+) -> list[dict]:
+    """A flat section list for `build_node_tree`: headings, then their articles.
+
+    Consecutive articles under one TOC heading share a section node, so an
+    outline can be read a level at a time instead of as a hundred thousand
+    siblings.
+    """
+    sections: list[dict] = []
+    current: str | None = None
+    heading_index: int | None = None
+
+    for article_id, text in articles:
+        start, end = spans[article_id]
+        heading = headings.get(article_id)
+        if heading and heading != current:
+            current = heading
+            heading_index = len(sections)
+            sections.append(
+                {"char_start": start, "char_end": end, "level": 1, "heading": heading}
+            )
+        elif heading_index is not None:
+            # `build_node_tree` widens parents to cover their children, but only
+            # a heading that owns its articles reads correctly in an outline.
+            sections[heading_index]["char_end"] = end
+
+        sections.append(
+            {
+                "char_start": start,
+                "char_end": end,
+                "level": 2 if current else 1,
+                "heading": _entry_title(text),
+                "article_id": article_id,
+            }
+        )
+    return sections
+
+
+async def _store_resource(
+    resource_id: str,
+    ingestion,
+    resource_title: str,
+    doc_metadata: dict,
+) -> dict:
+    """Store a walked book as one document, with its structure.
+
+    Storing per batch of a hundred chunks was never a chunking decision: it was
+    the only shape `ingest_drafts` offered, since it creates one document per
+    call and there was no way to add to an existing one. The corpus recorded the
+    consequence — LSJ as 1,903 documents named "(batch b0000)" and up, 2,525
+    documents for thirteen books, and no structure anywhere, because a batch
+    boundary is an artefact of the walk and describes nothing about the book.
+
+    The walk stays as it was, checkpointing every article; resumability lives in
+    the staging tables, which is the right place for it. Only the store changes:
+    once, at the end, with the whole text and the tree that addresses it.
+    """
+    chunks = await get_all_pending_chunks(resource_id)
+    if not chunks:
+        return {"store_status": "nothing_pending", "total_stored": 0, "total_failed": 0}
+
+    articles = await get_ordered_article_texts(resource_id)
+    if not articles:
+        log(f"{resource_id}: chunks staged but no article text; cannot anchor them")
+        return {"store_status": "no_article_text", "total_stored": 0,
+                "total_failed": len(chunks)}
+
+    document_text, spans = _assemble_book(articles)
+
+    drafts: list[PassageDraft] = []
+    headings: dict[str, str | None] = {}
+    unanchored = 0
+    for position, row in enumerate(chunks):
+        raw = row["draft_json"]
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        article_id = row["article_id"]
+        if article_id not in spans:
+            unanchored += 1
+            continue
+
+        metadata = payload.get("metadata") or {}
+        if article_id not in headings:
+            path = metadata.get("heading_path")
+            headings[article_id] = path[0] if isinstance(path, list) and path else None
+
+        draft = PassageDraft(**payload)
+        # Chunker offsets address one article; they must address the book.
+        offset = spans[article_id][0]
+        draft.char_start += offset
+        draft.char_end += offset
+        draft.position = position
+        drafts.append(draft)
+
+    if unanchored:
+        log(f"{resource_id}: {unanchored} chunk(s) reference an article with no "
+            f"stored text and were left out rather than anchored to the wrong place")
+
+    sections = _book_sections(articles, spans, headings)
+    node_drafts = build_node_tree(
+        sections, text_length=len(document_text), title=resource_title
+    )
+
+    log(f"{resource_id}: storing {len(drafts)} passages, {len(node_drafts)} nodes, "
+        f"{len(document_text):,} chars as one document")
+
+    result = await ingestion.ingest_drafts(
+        title=resource_title,
+        document_type="logos_book",
+        passage_drafts=drafts,
+        source=f"logos:{resource_id}",
+        metadata=doc_metadata,
+        full_text=document_text,
+        node_drafts=node_drafts,
+    )
+
+    document_id = result.get("document_id")
+    if document_id:
+        await mark_resource_chunks_stored(resource_id, UUID(str(document_id)))
+
+    return {
+        "store_status": "complete",
+        "total_stored": len(drafts),
+        "total_failed": unanchored,
+        "document_id": document_id,
+        "nodes": len(node_drafts),
+        "articles": len(articles),
+    }
+
+
 # ── Tool Handler ──────────────────────────────────────────────────────────────
 
 
@@ -1198,37 +1397,37 @@ async def handler(
 
     resource_title = book_data.get("resourceTitle", resource_id)
 
-    # ── Pipelined path: walker and storer run concurrently. ─────────────────
-    queue: asyncio.Queue = asyncio.Queue()
+    # Walk to the end, then store the book once. The walker and storer used to
+    # run concurrently so that passages appeared while the walk was still
+    # going, which is worth something on a book that takes hours. It cost the
+    # document: a store every hundred chunks meant a document every hundred
+    # chunks, because `ingest_drafts` creates one per call. Structure and
+    # citation both address a document, so both were unavailable for the
+    # entire corpus. Nothing is searchable until the walk finishes now, and the
+    # staged chunks survive a crash exactly as before.
+    walk_result = await _walk_and_checkpoint(resource_id, max_articles, book_data)
 
-    # Pre-load any pre-existing pending batches (resume case), excluding the
-    # one the walker will continue writing into. Sorted for deterministic
-    # processing order. See PIPELINED_INGEST.md §3.B + §6.5.
-    state = await _resolve_batch_state(resource_id)
-    active_key = _active_batch_key(state)
-    preloaded = await _preload_resume_queue(resource_id, queue, active_key)
-    if preloaded:
-        log(f"Pipelined ingest: pre-queued {preloaded} batch(es); "
-            f"active batch {active_key} held back for walker")
-
-    storer_task = asyncio.create_task(
-        _consume_and_store(
-            resource_id, ingestion, resource_title, _aiter_queue(queue),
+    progress = await get_ingest_progress(resource_id)
+    doc_metadata = {
+        "resource_id": resource_id,
+        "abbreviated_title": progress["abbreviated_title"] if progress else "",
+        "authors": (
+            list(progress["authors"]) if progress and progress.get("authors") else []
         ),
-        name="logos-storer",
-    )
-    walker_task = asyncio.create_task(
-        _walk_and_checkpoint(
-            resource_id, max_articles, book_data, queue, storer_task,
-        ),
-        name="logos-walker",
-    )
+    }
 
-    walk_result, store_result = await asyncio.gather(
-        walker_task, storer_task, return_exceptions=True,
-    )
-    walk_result, store_result = _normalize_results(walk_result, store_result)
-
-    store_result = await _run_mop_up_retries(resource_id, ingestion, store_result)
+    try:
+        store_result = await _store_resource(
+            resource_id, ingestion, resource_title, doc_metadata,
+        )
+    except EmbeddingUnavailable:
+        # The chunks are checkpointed; re-running the tool resumes at the store.
+        log(f"{resource_id}: embedding is unavailable — the walk is checkpointed, "
+            f"re-run once the embedding server is reachable.")
+        store_result = {
+            "store_status": "embedding_unavailable",
+            "total_stored": 0,
+            "total_failed": 0,
+        }
 
     return {**walk_result, **store_result}

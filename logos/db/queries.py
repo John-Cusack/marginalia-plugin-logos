@@ -269,6 +269,66 @@ async def get_chunks_for_batch(resource_id: str, batch_key: str) -> list[dict]:
         ]
 
 
+async def get_all_pending_chunks(resource_id: str) -> list[dict]:
+    """Every pending chunk for a resource, in walk order.
+
+    A whole book at once, rather than a batch of it. Ordering by the serial id
+    is ordering by the order the walker produced them, which is the order the
+    articles appear in the book — the same thing the per-batch path relied on,
+    just not cut into hundreds at a time.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, article_id, draft_json FROM logos_ingest_chunks
+            WHERE resource_id = $1 AND status = 'pending'
+            ORDER BY id""",
+            resource_id,
+        )
+        return [
+            {"id": r["id"], "article_id": r["article_id"], "draft_json": r["draft_json"]}
+            for r in rows
+        ]
+
+
+async def get_ordered_article_texts(resource_id: str) -> list[tuple[str, str]]:
+    """(article_id, text) for a resource, in the order the walker staged them.
+
+    Ordered by the first chunk each article produced, so an article that was
+    chunked into twenty pieces still appears once, where it belongs.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.article_id, a.text
+            FROM (
+                SELECT article_id, min(id) AS first_seen
+                FROM logos_ingest_chunks
+                WHERE resource_id = $1
+                GROUP BY article_id
+            ) c
+            JOIN logos_ingest_article_texts a
+              ON a.resource_id = $1 AND a.article_id = c.article_id
+            ORDER BY c.first_seen""",
+            resource_id,
+        )
+        return [(r["article_id"], r["text"]) for r in rows]
+
+
+async def mark_resource_chunks_stored(resource_id: str, document_id: UUID) -> int:
+    """Mark every pending chunk for a resource as stored against one document."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """UPDATE logos_ingest_chunks
+            SET status = 'stored', core_document_id = $2, stored_at = NOW()
+            WHERE resource_id = $1 AND status = 'pending'""",
+            resource_id,
+            document_id,
+        )
+        return int(result.split()[-1])
+
+
 async def mark_chunks_stored(
     resource_id: str, batch_key: str, document_id: UUID,
 ) -> int:
