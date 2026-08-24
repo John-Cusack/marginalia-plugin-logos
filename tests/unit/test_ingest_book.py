@@ -300,14 +300,14 @@ def test_assign_pages_basic():
 
     _assign_pages(drafts, markers)
 
-    assert drafts[0].metadata["page_start"] == "18"
-    assert drafts[0].metadata["page_end"] == "18"
-    assert drafts[0].metadata["volume"] == "1"
-    assert drafts[0].metadata["page_refs"] == ["vp.1.18"]
+    assert drafts[0].locator["page_start"] == "18"
+    assert drafts[0].locator["page_end"] == "18"
+    assert drafts[0].locator["volume"] == "1"
+    assert drafts[0].locator["page_refs"] == ["vp.1.18"]
 
-    assert drafts[1].metadata["page_start"] == "19"
-    assert drafts[1].metadata["page_end"] == "19"
-    assert drafts[1].metadata["page_refs"] == ["vp.1.19"]
+    assert drafts[1].locator["page_start"] == "19"
+    assert drafts[1].locator["page_end"] == "19"
+    assert drafts[1].locator["page_refs"] == ["vp.1.19"]
 
 
 def test_assign_pages_spanning_two_pages():
@@ -324,9 +324,9 @@ def test_assign_pages_spanning_two_pages():
 
     _assign_pages(drafts, markers)
 
-    assert drafts[0].metadata["page_start"] == "18"
-    assert drafts[0].metadata["page_end"] == "19"
-    assert drafts[0].metadata["page_refs"] == ["vp.1.18", "vp.1.19"]
+    assert drafts[0].locator["page_start"] == "18"
+    assert drafts[0].locator["page_end"] == "19"
+    assert drafts[0].locator["page_refs"] == ["vp.1.18", "vp.1.19"]
 
 
 def test_assign_pages_no_markers():
@@ -354,8 +354,8 @@ def test_assign_pages_roman_numerals():
 
     _assign_pages(drafts, markers)
 
-    assert drafts[0].metadata["page_start"] == "vii"
-    assert drafts[0].metadata["page_end"] == "vii"
+    assert drafts[0].locator["page_start"] == "vii"
+    assert drafts[0].locator["page_end"] == "vii"
     assert "volume" not in drafts[0].metadata
 
 

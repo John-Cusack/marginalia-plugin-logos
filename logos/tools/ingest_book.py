@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from bisect import bisect_right
 import re
 import time
 from collections.abc import AsyncGenerator, AsyncIterable, Iterable
@@ -26,7 +27,9 @@ from research_engine.plugins.sdk import tool
 
 from logos.db.migrate import run_migrations
 from logos.db.queries import (
+    get_article_page_markers,
     get_all_pending_chunks,
+    get_article_metadata,
     get_article_texts,
     get_chunks_for_batch,
     get_ingest_progress,
@@ -231,44 +234,60 @@ async def _resolve_url_to_resource_id(url: str) -> str:
 # ── Page-to-chunk assignment ─────────────────────────────────────────────────
 
 
+def page_locator(markers: list[dict], char_start: int, char_end: int) -> dict:
+    """The locator for one span, given a book's page markers.
+
+    Shared by ingestion and by the backfill that recovers pages for books
+    already in the corpus. They must agree: a passage should not get a different
+    page depending on which code path last touched it.
+
+    *markers* must be sorted by ``char_position`` and use the same origin as the
+    span — article-relative during ingestion, book-relative in the backfill.
+    """
+    if not markers:
+        return {}
+    positions = [m["char_position"] for m in markers]
+    first = max(bisect_right(positions, char_start) - 1, 0)
+    last = max(bisect_right(positions, char_end) - 1, first)
+
+    locator: dict = {
+        "page_start": markers[first].get("page"),
+        "page_end": markers[last].get("page"),
+    }
+    if markers[first].get("volume"):
+        locator["volume"] = markers[first]["volume"]
+    refs = [
+        markers[i].get("raw_ref") for i in range(first, last + 1)
+        if markers[i].get("raw_ref")
+    ]
+    if refs:
+        locator["page_refs"] = refs
+    return locator
+
+
 def _assign_pages(
     drafts: list[PassageDraft],
     page_markers: list[dict],
 ) -> None:
-    """Annotate each draft's metadata with page_start/page_end from markers."""
+    """Annotate each draft's locator with page_start/page_end from markers.
+
+    `locator`, not `metadata`. PassageDraft documents locator as the home for
+    "type-specific extras (page, verse, timecode) that are meaningful to a
+    reader", and it is what search hits and verify_quote surface. Writing pages
+    to metadata meant every consumer that asked a passage where it came from got
+    an empty dict — which is why a corpus of 67,730 passages had no locators.
+
+    Offsets come from the draft itself, not from `locator`. Reading the old
+    locator keys here would silently return 0 for every chunk and stamp them all
+    with the article's first page. Called before batch rebasing, so the spans are
+    article-relative — which is also what page_markers' char_position values are.
+    """
     if not page_markers or not drafts:
         return
-    marker_idx = 0
     for draft in drafts:
-        # Offsets live on the draft itself now, not in `locator`. Reading the
-        # old locator keys here would silently return 0 for every chunk and
-        # stamp them all with the article's first page.
-        # Called before batch rebasing, so these are article-relative — which is
-        # also what page_markers' char_position values are.
-        char_start = draft.char_start
-        char_end = draft.char_end
-        # Advance to the last marker at or before char_start
-        while (marker_idx + 1 < len(page_markers)
-               and page_markers[marker_idx + 1]["char_position"] <= char_start):
-            marker_idx += 1
-        page_start = page_markers[marker_idx]
-        # Find the last marker at or before char_end
-        end_idx = marker_idx
-        while (end_idx + 1 < len(page_markers)
-               and page_markers[end_idx + 1]["char_position"] <= char_end):
-            end_idx += 1
-        page_end = page_markers[end_idx]
-        # Collect all page refs spanning this chunk
-        span_refs = [
-            page_markers[i]["raw_ref"]
-            for i in range(marker_idx, end_idx + 1)
-        ]
-        draft.metadata["page_start"] = page_start.get("page")
-        draft.metadata["page_end"] = page_end.get("page")
-        if page_start.get("volume"):
-            draft.metadata["volume"] = page_start["volume"]
-        if span_refs:
-            draft.metadata["page_refs"] = span_refs
+        draft.locator.update(
+            page_locator(page_markers, draft.char_start, draft.char_end)
+        )
 
 
 # ── TOC-based chain recovery ─────────────────────────────────────────────────
@@ -1274,6 +1293,92 @@ async def _store_resource(
         "total_stored": len(drafts),
         "total_failed": unanchored,
         "document_id": document_id,
+        "nodes": len(node_drafts),
+        "articles": len(articles),
+    }
+
+
+async def rechunk_and_store_resource(
+    resource_id: str,
+    ingestion,
+    resource_title: str,
+    doc_metadata: dict,
+) -> dict:
+    """Rebuild a book from its staged article text, without walking Logos again.
+
+    The walk is the expensive, fragile half — 188,724 articles for LSJ, over an
+    API that times out. Its output is kept: `logos_ingest_article_texts` holds
+    the exact markdown each article was chunked from. So a chunker version bump
+    does not need the network, only the chunker.
+
+    That matters more than convenience here. The staged *chunks* are a previous
+    chunker's output: 251,768 of them against the 68,973 passages the corpus
+    holds today, because 5.0 stopped treating a scripture index as six hundred
+    boundaries. Replaying them would quietly undo that. Re-chunking the text
+    they came from does not.
+    """
+    articles = await get_ordered_article_texts(resource_id)
+    if not articles:
+        return {"store_status": "no_article_text", "total_stored": 0, "total_failed": 0}
+
+    staged = await get_article_metadata(resource_id)
+    # Page markers live in the HTML, which re-chunking never sees. Recovering
+    # them from the staged drafts is the difference between a corpus you can
+    # cite and one you can only search.
+    staged_pages = await get_article_page_markers(resource_id)
+    chunker = VerseChunker()
+    document_text, spans = _assemble_book(articles)
+
+    drafts: list[PassageDraft] = []
+    headings: dict[str, str | None] = {}
+    for article_id, text in articles:
+        recovered = staged.get(article_id, {})
+        path = recovered.get("heading_path")
+        headings[article_id] = path[0] if isinstance(path, list) and path else None
+
+        metadata = {
+            "resource_id": resource_id,
+            "resource_title": resource_title,
+            "article_id": article_id,
+            "title": recovered.get("title"),
+            "author": recovered.get("author"),
+            "heading_path": path,
+            "scripture_refs": recovered.get("scripture_refs") or [],
+        }
+        article_drafts = await chunker.chunk(text, metadata)
+        # Before rebasing: markers are article-relative, as chunker output is.
+        _assign_pages(article_drafts, staged_pages.get(article_id) or [])
+
+        offset = spans[article_id][0]
+        for draft in article_drafts:
+            draft.char_start += offset
+            draft.char_end += offset
+            draft.position = len(drafts)
+            drafts.append(draft)
+
+    sections = _book_sections(articles, spans, headings)
+    node_drafts = build_node_tree(
+        sections, text_length=len(document_text), title=resource_title
+    )
+
+    log(f"{resource_id}: re-chunked {len(articles)} articles into {len(drafts)} "
+        f"passages, {len(node_drafts)} nodes, {len(document_text):,} chars")
+
+    result = await ingestion.ingest_drafts(
+        title=resource_title,
+        document_type="logos_book",
+        passage_drafts=drafts,
+        source=f"logos:{resource_id}",
+        metadata=doc_metadata,
+        full_text=document_text,
+        node_drafts=node_drafts,
+    )
+
+    return {
+        "store_status": "complete",
+        "total_stored": len(drafts),
+        "total_failed": 0,
+        "document_id": result.get("document_id"),
         "nodes": len(node_drafts),
         "articles": len(articles),
     }
