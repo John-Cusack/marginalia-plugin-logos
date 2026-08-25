@@ -153,14 +153,40 @@ def _chunk_spans(
             # holds. Overlap is meant to carry context across a boundary; past
             # that it is restating the passage, and every restatement is stored,
             # embedded, and returned as its own search hit.
-            start = max(0, start - min(overlap_chars, (end - start) // 2))
-            if spans:
-                # Keep starts strictly increasing so chunks stay distinguishable.
-                start = max(start, spans[-1][0] + 1)
+            reached = max(0, start - min(overlap_chars, (end - start) // 2))
+            reached = _snap_to_word_start(text, reached)
+            floor = spans[-1][0] + 1 if spans else 0
+            # Take the overlap only when it is word-aligned and still leaves
+            # starts increasing. Otherwise keep the span's own boundary, which
+            # came from a verse reference, a paragraph break or the cap — all
+            # real seams. Losing overlap on a chunk costs a little context;
+            # a mid-word start costs the chunk its meaning.
+            if floor <= reached <= start:
+                start = reached
         start, end = _trim_span(text, start, end)
         if end > start:
             spans.append((start, end))
     return spans
+
+
+def _snap_to_word_start(text: str, index: int) -> int:
+    """Move *index* forward to the start of a word.
+
+    Overlap reaches back a fixed number of characters, which lands wherever it
+    lands — inside a word as often as not. `_trim_span` cannot repair that: it
+    strips whitespace, and there is none to strip in the middle of a word.
+
+    The corpus carried 2,619 passages like `'ain why it is not too prominent'`
+    and `'στὶν ἔξωθεν'` before this: fragments beginning mid-word, embedded and
+    ranked as if they were text. Two of them placed second and third for a plain
+    prose query.
+    """
+    if index <= 0 or text[index - 1].isspace():
+        return index
+    probe = index
+    while probe < len(text) and not text[probe - 1].isspace():
+        probe += 1
+    return probe
 
 
 #: A comment on a verse is at least a clause. An index entry is a reference and
