@@ -269,6 +269,179 @@ async def get_chunks_for_batch(resource_id: str, batch_key: str) -> list[dict]:
         ]
 
 
+async def get_all_pending_chunks(resource_id: str) -> list[dict]:
+    """Every pending chunk for a resource, in walk order.
+
+    A whole book at once, rather than a batch of it. Ordering by the serial id
+    is ordering by the order the walker produced them, which is the order the
+    articles appear in the book — the same thing the per-batch path relied on,
+    just not cut into hundreds at a time.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, article_id, draft_json FROM logos_ingest_chunks
+            WHERE resource_id = $1 AND status = 'pending'
+            ORDER BY id""",
+            resource_id,
+        )
+        return [
+            {"id": r["id"], "article_id": r["article_id"], "draft_json": r["draft_json"]}
+            for r in rows
+        ]
+
+
+async def get_ordered_article_texts(resource_id: str) -> list[tuple[str, str]]:
+    """(article_id, text) for a resource, in the order the walker staged them.
+
+    Ordered by the first chunk each article produced, so an article that was
+    chunked into twenty pieces still appears once, where it belongs.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.article_id, a.text
+            FROM (
+                SELECT article_id, min(id) AS first_seen
+                FROM logos_ingest_chunks
+                WHERE resource_id = $1
+                GROUP BY article_id
+            ) c
+            JOIN logos_ingest_article_texts a
+              ON a.resource_id = $1 AND a.article_id = c.article_id
+            ORDER BY c.first_seen""",
+            resource_id,
+        )
+        return [(r["article_id"], r["text"]) for r in rows]
+
+
+async def get_article_metadata(resource_id: str) -> dict[str, dict]:
+    """Per-article metadata recovered from the chunks the walk staged.
+
+    Re-chunking works from the stored article markdown, which is exactly what
+    the chunker consumed. What the markdown cannot supply is the part of the
+    metadata that came from the HTML around it — the TOC heading the article
+    sat under, and the scripture references Logos marked up rather than wrote
+    out. Both survive in the staged drafts, so they are read back rather than
+    lost or re-fetched.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT article_id, draft_json FROM logos_ingest_chunks
+            WHERE resource_id = $1 ORDER BY id""",
+            resource_id,
+        )
+
+    out: dict[str, dict] = {}
+    for row in rows:
+        raw = row["draft_json"]
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        meta = (payload or {}).get("metadata") or {}
+        entry = out.setdefault(
+            row["article_id"],
+            {"title": None, "author": None, "heading_path": None, "scripture_refs": []},
+        )
+        for key in ("title", "author", "heading_path"):
+            if entry[key] is None and meta.get(key) is not None:
+                entry[key] = meta[key]
+        # Union across the article's chunks: the chunker narrows the article's
+        # references down to the ones each span actually contains.
+        seen = entry["scripture_refs"]
+        for ref in meta.get("scripture_refs") or []:
+            if ref not in seen:
+                seen.append(ref)
+    return out
+
+
+async def get_article_page_markers(resource_id: str) -> dict[str, list[dict]]:
+    """Per-article page markers, recovered from the chunks the walk staged.
+
+    The same recovery `get_article_metadata` performs, for the same reason: page
+    markers come from ``<a data-datatype="vp">`` anchors in the Logos HTML, and
+    the stored article markdown does not carry them. Without this the re-chunk
+    path silently drops every page number — which is exactly what happened, and
+    why the corpus has 67,730 passages and no locators.
+
+    The markers are *reconstructed*, not the originals. Each staged chunk
+    contributes one marker at its own start, carrying the page that chunk began
+    on. So a page boundary is located to within one old chunk rather than to the
+    character. Old chunks average a few hundred characters against a printed
+    page of a couple of thousand, so the page number is right; it is the exact
+    character the page turns at that is approximate, and nothing cites that.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT article_id, draft_json FROM logos_ingest_chunks
+            WHERE resource_id = $1 ORDER BY id""",
+            resource_id,
+        )
+
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        raw = row["draft_json"]
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        meta = (payload or {}).get("metadata") or {}
+        page = meta.get("page_start")
+        if page is None:
+            continue
+        marker = {
+            "char_position": payload.get("char_start") or 0,
+            "page": page,
+            "raw_ref": (meta.get("page_refs") or [None])[0],
+        }
+        if meta.get("volume"):
+            marker["volume"] = meta["volume"]
+        markers = out.setdefault(row["article_id"], [])
+        # Consecutive chunks on the same page describe one marker, not many.
+        if markers and markers[-1]["page"] == page:
+            continue
+        markers.append(marker)
+
+    for markers in out.values():
+        markers.sort(key=lambda m: m["char_position"])
+    return out
+
+
+async def get_resource_document_id(resource_id: str) -> UUID | None:
+    """The core document a resource was stored as, if it has been stored."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT core_document_id FROM logos_ingest_chunks
+            WHERE resource_id = $1 AND core_document_id IS NOT NULL
+            LIMIT 1""",
+            resource_id,
+        )
+    return row["core_document_id"] if row else None
+
+
+async def get_staged_resource_ids() -> list[str]:
+    """Resources with staged chunks, most chunks first."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT resource_id, count(*) n FROM logos_ingest_chunks
+            GROUP BY 1 ORDER BY 2 DESC"""
+        )
+    return [row["resource_id"] for row in rows]
+
+
+async def mark_resource_chunks_stored(resource_id: str, document_id: UUID) -> int:
+    """Mark every pending chunk for a resource as stored against one document."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """UPDATE logos_ingest_chunks
+            SET status = 'stored', core_document_id = $2, stored_at = NOW()
+            WHERE resource_id = $1 AND status = 'pending'""",
+            resource_id,
+            document_id,
+        )
+        return int(result.split()[-1])
+
+
 async def mark_chunks_stored(
     resource_id: str, batch_key: str, document_id: UUID,
 ) -> int:
