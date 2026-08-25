@@ -168,3 +168,55 @@ async def test_overlap_never_exceeds_the_passage_it_widens(chunker):
             f"passage at {later.char_start} is {span} characters and reaches "
             f"{overlap} back into its predecessor"
         )
+
+
+class TestOverlapNeverStartsMidWord:
+    """Overlap reaches back by a character count, which lands wherever it lands.
+
+    `_trim_span` cannot repair a mid-word start — it strips whitespace, and
+    there is none in the middle of a word. The live corpus carried 2,619
+    passages like `'ain why it is not too prominent'` and `'στὶν ἔξωθεν'`, which
+    embed and rank like any other passage: two of them placed second and third
+    for a plain prose query.
+    """
+
+    PROSE = (
+        "3:16 "
+        + "The judgement of God is revealed against unrighteousness, and it is "
+        "important to explain why it is not too prominent in the earlier "
+        "prophets. " * 12
+        + "\n\n4:1 "
+        + "A second discussion follows here about the Law and its function. " * 12
+    )
+
+    @pytest.mark.asyncio
+    async def test_no_chunk_begins_inside_a_word(self):
+        drafts = await VerseChunker().chunk(self.PROSE, {})
+
+        mid_word = [
+            d
+            for d in drafts
+            if d.char_start > 0 and not self.PROSE[d.char_start - 1].isspace()
+        ]
+        assert mid_word == [], [d.text[:40] for d in mid_word]
+
+    @pytest.mark.asyncio
+    async def test_the_offsets_still_address_the_text_they_claim(self):
+        """Snapping forward must move the span, not just the slice."""
+        drafts = await VerseChunker().chunk(self.PROSE, {})
+
+        for draft in drafts:
+            assert draft.text == self.PROSE[draft.char_start : draft.char_end]
+
+    @pytest.mark.asyncio
+    async def test_overlap_is_dropped_rather_than_landing_mid_word(self):
+        """The degradation this chooses.
+
+        Losing overlap on a chunk costs a little context across one boundary. A
+        mid-word start costs the chunk its meaning, and it is stored, embedded
+        and returned as a search hit anyway.
+        """
+        drafts = await VerseChunker().chunk(self.PROSE, {})
+
+        assert len(drafts) > 1
+        assert drafts[1].text[0].isalnum()
