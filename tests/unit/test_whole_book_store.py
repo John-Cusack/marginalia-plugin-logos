@@ -71,11 +71,14 @@ class TestAssembly:
         sections = _book_sections(
             ARTICLES, spans, {"R.A.1": "Alpha", "R.A.2": "Alpha"}
         )
-        headings = [s for s in sections if s["level"] == 1]
-        entries = [s for s in sections if s["level"] == 2]
+        headings = [s for s in sections if s.get("article_id") is None]
+        entries = [s for s in sections if s.get("article_id") is not None]
 
         assert [h["heading"] for h in headings] == ["Alpha"]
         assert [e["heading"] for e in entries] == ["ἀλληλοκτονέω", "ἀλληλοπάθεια"]
+        # `R.A.1` is three deep, so four under its heading. It used to be two
+        # whatever the id said, which is what flattened every book to depth 2.
+        assert [e["level"] for e in entries] == [4, 4]
         # The heading must cover the articles beneath it or an outline is wrong.
         assert headings[0]["char_end"] == spans["R.A.2"][1]
 
