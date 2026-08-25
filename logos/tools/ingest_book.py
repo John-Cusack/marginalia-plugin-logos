@@ -1176,6 +1176,16 @@ def _book_sections(
     Consecutive articles under one TOC heading share a section node, so an
     outline can be read a level at a time instead of as a hundred thousand
     siblings.
+
+    An article's level comes from its own id, which Logos writes as a dotted
+    path — `LET.X.1.B.1` is five levels down. Every book here was previously
+    stored two levels deep whatever its ids said, because this function assigned
+    every article `level = 2`. TDNT is 7,982 articles under 31 alphabet letters
+    with a real hierarchy seven deep, and all of it was flattened.
+
+    The TOC cannot supply this. Every `heading_path` staged by the walk is one
+    element long — the TOC stops at letters — so the ids are the only record of
+    the structure, and they are already in hand.
     """
     sections: list[dict] = []
     current: str | None = None
@@ -1199,12 +1209,30 @@ def _book_sections(
             {
                 "char_start": start,
                 "char_end": end,
-                "level": 2 if current else 1,
+                "level": _article_level(article_id, under_heading=current is not None),
                 "heading": _entry_title(text),
                 "article_id": article_id,
             }
         )
     return sections
+
+
+def _article_level(article_id: str, *, under_heading: bool) -> int:
+    """Nesting depth for an article, read off its dotted id.
+
+    `LET.X` is one deep, `LET.X.1.B.1` is five. The TOC heading above them holds
+    level 1, so an article sits at its own depth plus one when there is a heading
+    to sit under.
+
+    Ids whose parent was never walked need no special handling. `build_node_tree`
+    nests with a stack, so a level-5 section with no level-4 before it attaches
+    to the nearest shallower ancestor — which is the right answer and is what its
+    docstring already promises about levels that skip a rank. Between 2% and 20%
+    of ids are in that position depending on the resource, and synthesising
+    parents for them would invent nodes with no text and no span.
+    """
+    depth = article_id.count(".") + 1
+    return depth + 1 if under_heading else depth
 
 
 async def _store_resource(
