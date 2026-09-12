@@ -17,6 +17,13 @@ dev = [
     "structlog>=24.0",
     "pyyaml>=6.0",
     "sqlalchemy>=2.0",
+    # The integration suite provisions its scratch database by running core's
+    # migrations, which is how it gets a schema identical to the real one.
+    # Those migrations import core's schema module, so the pack's dev extra
+    # needs what that module needs — pgvector types the embedding column.
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    "pydantic-settings>=2.0",
 ]
 auth = [
     "playwright>=1.40",
@@ -35,3 +42,7 @@ packages = ["logos"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (no I/O)",
+    "integration: Integration tests (real Postgres; skipped without one)",
+]

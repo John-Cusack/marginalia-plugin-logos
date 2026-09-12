@@ -91,6 +91,16 @@ class TestBuildBookPatterns:
 
 
 class TestScriptureRefRangeFilter:
+    """Shape only. Whether the SQL *runs* is tested in tests/integration.
+
+    These assertions are on the compiled statement as a string, and a string
+    assertion cannot tell working SQL from SQL Postgres refuses to plan. That is
+    not a hypothetical: `jsonb_array_elements_text(p.metadata->'scripture_refs')`
+    raised `function jsonb_array_elements_text(json) does not exist` for every
+    argument on every corpus, while every test here passed. Keep these for the
+    cheap checks, and put anything about behaviour in the suite that executes.
+    """
+
     def test_protocol_conformance(self):
         pytest.importorskip("research_engine")
         from research_engine.domain.filter_extension import FilterExtension

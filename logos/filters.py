@@ -221,11 +221,26 @@ class ScriptureRefRangeFilter:
             sa.text("core.passages p")
         ).where(
             sa.text(
+                # `core.passages.metadata` is a `json` column, and every
+                # `jsonb_*` function takes `jsonb` — so the uncast form raises
+                # `function jsonb_array_elements_text(json) does not exist` for
+                # every value of every argument, and this filter had never run
+                # against any corpus. Core hit the same wall in
+                # `services/search/filter_extensions.py` and fixed it the same
+                # way: cast at the boundary.
+                #
+                # The cast is on `metadata` rather than on the extracted member
+                # so `->` also resolves as the jsonb operator, and the guard is
+                # on the whole expression because a passage whose
+                # `scripture_refs` is absent or is not an array would otherwise
+                # abort the scan rather than simply not match.
                 "EXISTS ("
                 "  SELECT 1"
-                "  FROM jsonb_array_elements_text(p.metadata->'scripture_refs') AS r(ref)"
+                "  FROM jsonb_array_elements_text("
+                "         (p.metadata::jsonb)->'scripture_refs') AS r(ref)"
                 "  WHERE r.ref LIKE ANY(:book_patterns)"
                 ")"
+                " AND jsonb_typeof((p.metadata::jsonb)->'scripture_refs') = 'array'"
             ).bindparams(
                 sa.bindparam("book_patterns", value=patterns)
             )
