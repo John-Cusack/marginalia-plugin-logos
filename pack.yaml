@@ -45,6 +45,9 @@ provides:
     - id: logos.word_study
       entry: "logos.tools.word_study:handler"
       description: Hebrew/Greek word study guide
+    - id: logos.get_entry
+      entry: "logos.tools.get_entry:handler"
+      description: Get the full verbatim text of a lexicon/dictionary entry by headword
     - id: logos.workflows
       entry: "logos.tools.workflows:handler"
       description: List available Logos workflow templates
