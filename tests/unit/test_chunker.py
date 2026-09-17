@@ -173,7 +173,7 @@ async def test_overlap_never_exceeds_the_passage_it_widens(chunker):
 class TestOverlapNeverStartsMidWord:
     """Overlap reaches back by a character count, which lands wherever it lands.
 
-    `_trim_span` cannot repair a mid-word start — it strips whitespace, and
+    `trim_span` cannot repair a mid-word start — it strips whitespace, and
     there is none in the middle of a word. The live corpus carried 2,619
     passages like `'ain why it is not too prominent'` and `'στὶν ἔξωθεν'`, which
     embed and rank like any other passage: two of them placed second and third

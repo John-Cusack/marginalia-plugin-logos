@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from research_engine_sdk import NodeDraft
 
 from logos.tools.ingest_book import (
     ARTICLE_SEPARATOR,
@@ -162,8 +163,9 @@ class TestStoreResource:
         await _store_resource("LLS:46.30.25", ingestion, "LSJ", {})
 
         nodes = calls[0]["node_drafts"]
+        assert all(isinstance(n, NodeDraft) for n in nodes), "core takes SDK drafts"
         titles = [n.title for n in nodes]
-        assert "LSJ" in titles, "the root carries the book"
+        assert (nodes[0].path, nodes[0].title) == ("r", "LSJ"), "the root carries the book"
         assert "ἀλληλοκτονέω" in titles, "the entry is what a citation names"
         assert all(n.char_end <= len(calls[0]["full_text"]) for n in nodes)
 

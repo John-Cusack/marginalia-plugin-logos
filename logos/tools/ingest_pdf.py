@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
+
+from logos.lib.context import binds_context
 
 
 @tool(
@@ -27,6 +29,7 @@ from research_engine.plugins.sdk import tool
         "required": ["path"],
     },
 )
+@binds_context
 async def handler(path: str, document_type: str = "logos_book", **kwargs) -> str:
     source = Path(path)
     if not source.exists():
@@ -34,7 +37,7 @@ async def handler(path: str, document_type: str = "logos_book", **kwargs) -> str
 
     # The core ingestion pipeline will use the verse_boundary chunker
     # because logos_book document type has default_chunker = "verse_boundary"
-    # in pack.yaml.
+    # in plugin.yaml.
     #
     # This tool requires the ingestion client to be available.
     # For now, return instructions for using the core ingest command.

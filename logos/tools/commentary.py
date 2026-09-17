@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 from logos.parsers.xml_to_markdown import xml_to_markdown
 
@@ -104,6 +105,7 @@ def _parse_resource_response(data: dict, resource_set: str) -> str:
         "required": ["reference"],
     },
 )
+@binds_context
 async def handler(
     reference: str,
     resource_sets: list[str] | None = None,

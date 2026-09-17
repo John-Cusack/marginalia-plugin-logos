@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from urllib.parse import quote
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 
 
@@ -24,6 +25,7 @@ from logos.http.client import logos_client
         "required": ["reference"],
     },
 )
+@binds_context
 async def handler(reference: str, **kwargs) -> str:
     data = await logos_client.get(
         f"/api/app/guides/exegetical?reference={quote(reference)}"

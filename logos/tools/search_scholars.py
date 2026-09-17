@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
-from logos.db.migrate import run_migrations
+from logos.lib.context import binds_context
 from logos.db.queries import search_scholars
 
 
@@ -31,13 +31,13 @@ from logos.db.queries import search_scholars
         },
     },
 )
+@binds_context
 async def handler(
     name: str | None = None,
     field: str | None = None,
     passage_book: str | None = None,
     **kwargs,
 ) -> str:
-    await run_migrations()
     results = await search_scholars(
         {"name": name, "field": field, "passage_book": passage_book}
     )

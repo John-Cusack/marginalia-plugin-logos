@@ -1,7 +1,14 @@
-"""logos-diagnose — one-shot health check across every auth layer."""
+"""logos-diagnose — one-shot health check across every auth layer.
+
+Prints JSON: the session file, the parsed cookie jar (names and value lengths,
+never values), the in-memory cache, the browser profile, and a live check
+against the Logos API. Exit status is 0 when that live check authenticates,
+2 when it does not, 1 when the diagnostic itself fails.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -9,7 +16,13 @@ import sys
 from logos.auth.diagnose import run_diagnose
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="logos-diagnose",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.parse_args(argv)
     try:
         result = asyncio.run(run_diagnose())
     except Exception as e:

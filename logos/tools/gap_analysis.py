@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
-from logos.db.migrate import run_migrations
+from logos.lib.context import binds_context
 from logos.db.queries import gap_analysis
 
 
@@ -24,8 +24,8 @@ from logos.db.queries import gap_analysis
         "required": ["passage_book"],
     },
 )
+@binds_context
 async def handler(passage_book: str, **kwargs) -> str:
-    await run_migrations()
     results = await gap_analysis(passage_book)
     owned = [r for r in results if r.get("logos_owned") is True]
     not_owned = [r for r in results if r.get("logos_owned") is not True]

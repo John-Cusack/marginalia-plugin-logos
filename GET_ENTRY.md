@@ -1,7 +1,7 @@
 # logos.get_entry — Verbatim Lexicon-Entry Retrieval (v2 implementation doc)
 
 **Status:** v2 implemented, unit-verified (26 tests green, ruff-clean) and live-accepted 2026-09-12 (4/4 live pins green, ~6min wall).
-**Scope:** `logos/tools/get_entry.py`, unit + opt-in live tests. `pack.yaml` unchanged (input schema is code-declared).
+**Scope:** `logos/tools/get_entry.py`, unit + opt-in live tests. The manifest is `logos/plugin.yaml` since 0.2.0, and it declares the tool's input schema alongside the `@tool` decorator's; a test fails if the two drift.
 **Risk:** v1's failure semantics are wrong for production use (no deadline; §4.A is a merge-blocker for any caller with a timeout). The resolution machinery itself is sound and stays.
 
 **Review deltas vs the accepted draft** (all folded inline, listed here so the implementer sees them):
@@ -170,7 +170,7 @@ Add `status: "entry" | "ambiguous" | "not_found"` to all three shapes (§3). Kee
 - `logos/tools/get_entry.py` — §§4.A–4.H. Touch points: `handler` (`timeout_s` input + schema, `status`, direct-path skip, explicit raise, serve winner from cache); `_entry_response` (+`status`/`match`/`scan_complete`); `_candidate_row` (+fallback label, matched span language); `_resolve_candidates` (+`deadline`, return cache); `_fetch_deadline` (new helper); `_seek_numeric` (deadline, far probes, explicit raise, `> 0` guard); `_seek_alpha` (cache check, deadline); `_seek_offset` (deadline); `_walk_range_numeric` / `_scan_section_numeric` / `_scan_section_alpha` (deadline); `_recover_numeric` / `_recover_by_alpha_scan` / `_alpha_offset_map` (+cache/budget/deadline); `_plan_scan_ranges` (delete dead clause, scan-to-end sentinel). No new modules.
 - `tests/unit/test_get_entry.py` — §7 additions; extend the contract test for `status`.
 - `tests/integration/test_get_entry_live.py` — **changes**: assert `status`/`match`/`scan_complete` on the BDB pin; add CHALOT צְדָקָה pin, ambiguous-שער gate+hair live check, and `timeout_s: 10`/`30` partial-response checks. Pins stand. Plus an autouse fixture closing the `logos_client` singleton after each test: its httpx pool binds to the first test's event loop and pytest-asyncio runs each test on a fresh loop, so every test after the first died with "Event loop is closed" until the fixture. Production (single-loop MCP server) is unaffected.
-- `pack.yaml` — unchanged (input schema is code-declared).
+- `logos/plugin.yaml` — the tool entry and its input schema (0.2.0; was `pack.yaml`).
 
 ## 7. Tests
 

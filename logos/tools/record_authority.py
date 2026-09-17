@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
-from logos.db.migrate import run_migrations
+from logos.lib.context import binds_context
 from logos.db.queries import upsert_authority
 
 
@@ -54,6 +54,7 @@ from logos.db.queries import upsert_authority
         "required": ["scholar_name", "passage_book", "passage_start", "passage_end", "authority_score", "score_reasons"],
     },
 )
+@binds_context
 async def handler(
     scholar_name: str,
     passage_book: str,
@@ -66,7 +67,6 @@ async def handler(
     series_tier: int | None = None,
     **kwargs,
 ) -> str:
-    await run_migrations()
     record_id = await upsert_authority({
         "scholar_name": scholar_name,
         "passage_book": passage_book,

@@ -43,8 +43,9 @@ import unicodedata
 from urllib.parse import quote
 
 import httpx
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 from logos.lib.logger import log
 
@@ -1346,6 +1347,7 @@ async def _resolve_candidates(
         "required": ["resource_id"],
     },
 )
+@binds_context
 async def handler(
     resource_id: str,
     headword: str = "",

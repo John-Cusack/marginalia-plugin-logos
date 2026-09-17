@@ -11,8 +11,8 @@ deep, stored two deep.
 from __future__ import annotations
 
 import pytest
-from research_engine.domain.nodes import build_node_tree
 
+from logos.ingest.nodes import build_node_tree
 from logos.tools.ingest_book import _article_level, _assemble_book, _book_sections
 
 

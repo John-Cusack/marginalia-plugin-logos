@@ -16,22 +16,26 @@ import pytest
 
 @pytest.fixture
 def cookies_file(tmp_path, monkeypatch):
-    """Redirect every reference to COOKIE_PATH at a tmp file and reset cache state."""
-    path = tmp_path / "cookies.json"
-    monkeypatch.setattr("logos.lib.constants.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.manager.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.cookie_store.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.cookie_store.CONFIG_DIR", tmp_path)
+    """Point the plugin data directory at tmp and reset cache state.
+
+    The cookie path is resolved on every call, so redirecting ``RE_DATA_DIR``
+    (with no bound context) redirects every reader and writer at once.
+    """
+    from logos.lib.context import reset_context
+
+    reset_context()
+    monkeypatch.setenv("RE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    path = tmp_path / "plugin-data" / "logos" / "cookies.json"
 
     # Clear module-global cache between tests.
     from logos.auth import manager
-    manager._cached_jar = None
-    manager._cached_mtime = 0.0
+    manager.reload_cookies()
 
     yield path
 
-    manager._cached_jar = None
-    manager._cached_mtime = 0.0
+    manager.reload_cookies()
+    reset_context()
 
 
 def _write_jar(path, cookies):
@@ -127,3 +131,34 @@ class TestReloadVsLogout:
         logout()
         assert manager._cached_jar is None
         assert not cookies_file.exists()  # the destructive behaviour, kept explicit
+
+
+class TestCacheFollowsTheDataDirectory:
+    def test_a_different_data_dir_does_not_serve_the_cached_jar(
+        self, cookies_file, tmp_path, monkeypatch
+    ):
+        """Same mtime, different file: the cache must key on the path too."""
+        _write_jar(cookies_file, [_cookie("auth2", "first-dir")])
+        from logos.auth.manager import get_cookie_jar
+        assert get_cookie_jar().auth_cookie.value == "first-dir"
+
+        other = tmp_path / "other"
+        other_file = other / "plugin-data" / "logos" / "cookies.json"
+        _write_jar(other_file, [_cookie("auth2", "second-dir")])
+        stamp = cookies_file.stat().st_mtime
+        os.utime(other_file, (stamp, stamp))  # an mtime check alone would miss this
+        monkeypatch.setenv("RE_DATA_DIR", str(other))
+
+        assert get_cookie_jar().auth_cookie.value == "second-dir"
+
+    def test_saved_session_is_private(self, cookies_file):
+        from logos.auth.manager import _store_jar
+        from logos.lib.types import LogosCookie, LogosCookieJar
+
+        _store_jar(LogosCookieJar(cookies=[LogosCookie(
+            name="auth2", value="v", domain="app.logos.com", path="/", expires=-1,
+        )]))
+
+        assert cookies_file.stat().st_mode & 0o777 == 0o600
+        assert cookies_file.parent.stat().st_mode & 0o777 == 0o700
+        assert not list(cookies_file.parent.glob(".*.tmp")), "atomic write left its temp file"

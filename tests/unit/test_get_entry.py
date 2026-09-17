@@ -481,15 +481,11 @@ def test_tool_module_imports_no_writers_or_engine():
         elif isinstance(node, ast.Import):
             imported.extend(a.name for a in node.names)
     forbidden = ("logos.db", "logos.ingest", "logos.tools.ingest_book")
-    # research_engine.plugins.sdk is the sanctioned @tool decorator path used
-    # by every tool (cf. word_study.py); anything deeper into the engine
-    # (storage, corpus, config) is forbidden here.
+    # research_engine_sdk is the sanctioned @tool decorator path used by every
+    # tool (cf. word_study.py); the engine itself is never imported.
     for name in imported:
         assert not name.startswith(forbidden), f"writer import: {name}"
-        if name.startswith("research_engine"):
-            assert name.startswith("research_engine.plugins.sdk"), (
-                f"engine import: {name}"
-            )
+        assert name.split(".")[0] != "research_engine", f"engine import: {name}"
     for symbol in (
         "insert_chunks",
         "save_article_text",
@@ -533,12 +529,12 @@ async def test_dry_run_proves_zero_writes(monkeypatch):
 # ── Registration ──────────────────────────────────────────────────────────────
 
 
-def test_tool_id_and_pack_registration():
+def test_tool_id_and_manifest_registration():
     assert get_entry.handler._tool_id == "logos.get_entry"
     schema = get_entry.handler._tool_input_schema
     assert "resource_id" in schema["required"]
-    pack_path = Path(get_entry.__file__).resolve().parents[2] / "pack.yaml"
-    pack = yaml.safe_load(pack_path.read_text())
+    manifest_path = Path(get_entry.__file__).resolve().parents[1] / "plugin.yaml"
+    pack = yaml.safe_load(manifest_path.read_text())
     tools = {t["id"]: t for t in pack["provides"]["mcp_tools"]}
     assert tools["logos.get_entry"]["entry"] == "logos.tools.get_entry:handler"
     assert "logos.word_study" in tools  # registered alongside word study

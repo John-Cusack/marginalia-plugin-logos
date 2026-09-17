@@ -1,0 +1,98 @@
+name: Release
+
+# Publishes marginalia-ai-plugin-logos to PyPI with Trusted Publishing.
+#
+# One-time setup, by a maintainer:
+#   * PyPI: add a (pending) Trusted Publisher for project
+#     `marginalia-ai-plugin-logos`, owner `John-Cusack`, repository
+#     `marginalia-plugin-logos`, workflow `release.yml`, environment `pypi`.
+#     The PyPI project name is the distribution name, not the repository name.
+#   * GitHub: create environment `pypi` with required reviewers, and protect
+#     `v*` tags with a tag ruleset so only maintainers can push them.
+#   * TestPyPI (optional): the same pending publisher, project
+#     `marginalia-ai-plugin-logos`, owner `John-Cusack`, repository
+#     `marginalia-plugin-logos`, workflow `release.yml`, environment `testpypi`.
+#     No job publishes there yet, so register it only alongside adding one.
+#
+# No API token is stored anywhere. Versions are immutable: a bad release is
+# fixed by a higher version, never by rebuilding this one.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Tag, version and changelog agree
+        run: |
+          version=$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "${GITHUB_REF_NAME}" = "v${version}" \
+            || { echo "tag ${GITHUB_REF_NAME} does not match version ${version}"; exit 1; }
+          grep -Eq "^## \[${version//./\\.}\]" CHANGELOG.md \
+            || { echo "CHANGELOG.md has no section for ${version}"; exit 1; }
+
+      - name: No pre-release scaffolding
+        # The vendored SDK copy must be gone: releases resolve the published SDK.
+        run: |
+          if grep -q '^\[tool\.uv\.sources\]' pyproject.toml; then
+            echo "pyproject.toml still has [tool.uv.sources]"; exit 1; fi
+          if [ -e vendor ]; then echo "vendor/ still exists"; exit 1; fi
+          if grep -q 'pre-release:sdk' README.md; then echo "README.md still has the pre-release SDK note"; exit 1; fi
+
+      - name: Build
+        run: uv build --out-dir dist
+      - name: Inspect artifacts
+        run: uv run --no-project --with pyyaml python scripts/check_dist.py dist
+      - name: twine check --strict
+        run: uvx --from twine twine check --strict dist/*
+
+      - name: Clean install from the production index, outside the checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install dist/*.whl \
+            "pytest>=8,<9" "pytest-asyncio>=0.23,<1" "pyyaml>=6,<7"
+      - name: Discover and load from site-packages
+        working-directory: ${{ runner.temp }}
+        run: env -u PYTHONPATH "$RUNNER_TEMP/smoke/bin/python" "$GITHUB_WORKSPACE/scripts/check_installed.py"
+      - name: Unit suite against the installed wheel
+        run: |
+          mkdir -p "$RUNNER_TEMP/suite"
+          cp -r tests "$RUNNER_TEMP/suite/tests"
+          printf '[pytest]\nasyncio_mode = auto\nmarkers =\n    unit\n    integration\n    live\n' > "$RUNNER_TEMP/suite/pytest.ini"
+          cd "$RUNNER_TEMP/suite"
+          env -u PYTHONPATH "$RUNNER_TEMP/smoke/bin/python" -m pytest tests/unit -q -p no:cacheprovider
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/marginalia-ai-plugin-logos/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist/
+      # PEP 740 attestations are on by default; skip-existing is deliberately unset.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

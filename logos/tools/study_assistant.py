@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 from logos.parsers.sse_buffer import buffer_sse
 
@@ -26,6 +27,7 @@ from logos.parsers.sse_buffer import buffer_sse
         "required": ["message"],
     },
 )
+@binds_context
 async def handler(message: str, conversation_id: str | None = None, **kwargs) -> str:
     body: dict = {
         "message": message,

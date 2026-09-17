@@ -13,11 +13,15 @@
 
 ## How to Resume
 
-From the `marginalia-plugin-logos` directory:
+From a checkout of this repository (`uv sync` first). No engine checkout or
+`PYTHONPATH` is needed: the plugin depends on `marginalia-ai-sdk` only.
 
 ```bash
-PYTHONPATH="/home/john/repos/MarginaliaAI/packages/core/src:$PYTHONPATH" \
-RE_DB_URL="postgresql://re_dev:re_dev_pass@localhost:5435/research_engine" \
+export RE_DB_URL="postgresql://re_dev:re_dev_pass@localhost:5435/research_engine"
+
+# Tools no longer create their tables; make sure the plugin's migrations ran.
+uv run python -m logos.db.migrate upgrade
+
 uv run python -c "
 import asyncio
 from logos.tools.ingest_book import _walk_and_checkpoint

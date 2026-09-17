@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration]
 
+# The scratch schema comes from core's own migrations, so this suite needs core
+# installed — which only the core integration job does. Unit runs are SDK-only.
+pytest.importorskip("research_engine.testing", reason="needs research-engine installed")
+
 #: `metadata` is deliberately written as `json`, matching migration 001. Writing
 #: it as `jsonb` here would make the suite pass against a schema the engine does
 #: not have, which is exactly the mistake being corrected.

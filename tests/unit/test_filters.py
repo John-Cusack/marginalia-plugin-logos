@@ -102,11 +102,11 @@ class TestScriptureRefRangeFilter:
     """
 
     def test_protocol_conformance(self):
-        pytest.importorskip("research_engine")
-        from research_engine.domain.filter_extension import FilterExtension
-
+        """Core's `FilterExtension` protocol, by member; `isinstance` against core
+        itself runs in the integration suite."""
         f = ScriptureRefRangeFilter()
-        assert isinstance(f, FilterExtension)
+        for member in ("filter_id", "input_schema", "description", "build_clause"):
+            assert hasattr(f, member), member
 
     def test_properties(self):
         f = ScriptureRefRangeFilter()

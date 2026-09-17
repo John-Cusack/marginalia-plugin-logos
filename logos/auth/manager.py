@@ -3,7 +3,9 @@
 The in-memory cache is mtime-aware: if the cookies file on disk is newer than
 the cached jar, the next ``get_cookie_jar()`` reloads transparently. That means
 a fresh login from the CLI (which writes the file) is picked up by a long-running
-MCP server without a restart.
+MCP server without a restart. The cache is also keyed on the file's resolved
+path, so a different data directory (another bound context, a changed
+``RE_DATA_DIR``) never serves the previous location's jar.
 
 Refresh is **silent-first and non-destructive**. ``refresh_auth()`` obtains a
 fresh session via password-free renewal from the persistent SSO profile and only
@@ -21,12 +23,15 @@ from __future__ import annotations
 import asyncio
 import time
 
-from logos.lib.constants import COOKIE_PATH
+from pathlib import Path
+
+from logos.lib.constants import cookie_path
 from logos.lib.logger import log, log_error
 from logos.lib.types import LogosCookieJar
 
 from .cookie_store import clear_cookie, load_cookies, save_cookies
 from .credentials import get_credentials
+from .migrate_data import legacy_session_hint
 from .playwright_login import (
     LoginError,
     NeedsInteractiveLogin,
@@ -37,6 +42,7 @@ from .verify import check_session
 
 _cached_jar: LogosCookieJar | None = None
 _cached_mtime: float = 0.0
+_cached_path: Path | None = None
 _refresh_lock: asyncio.Lock | None = None
 
 # How close to expiry (seconds) before the session keeper proactively re-logs in.
@@ -67,24 +73,28 @@ _last_renewal_monotonic: float | None = None
 _silent_backoff_until: float | None = None
 
 
-def _file_mtime() -> float | None:
+def _file_mtime(path: Path | None = None) -> float | None:
     try:
-        return COOKIE_PATH.stat().st_mtime
+        return (path or cookie_path()).stat().st_mtime
     except FileNotFoundError:
         return None
 
 
 def get_cookie_jar() -> LogosCookieJar | None:
-    """Return the current cookie jar, reloading from disk if the file is newer."""
-    global _cached_jar, _cached_mtime
-    mtime = _file_mtime()
+    """Return the current cookie jar, reloading from disk if the file is newer
+    or lives somewhere other than the cached one did."""
+    global _cached_jar, _cached_mtime, _cached_path
+    path = cookie_path()
+    mtime = _file_mtime(path)
     if mtime is None:
         _cached_jar = None
         _cached_mtime = 0.0
+        _cached_path = None
         return None
-    if _cached_jar is None or mtime > _cached_mtime:
+    if _cached_jar is None or path != _cached_path or mtime > _cached_mtime:
         _cached_jar = load_cookies()
         _cached_mtime = mtime
+        _cached_path = path
     return _cached_jar
 
 
@@ -96,11 +106,13 @@ def get_cookie_header() -> str | None:
 
 def _store_jar(jar: LogosCookieJar) -> None:
     """Persist a freshly-obtained jar and sync the in-memory cache + mtime."""
-    global _cached_jar, _cached_mtime
+    global _cached_jar, _cached_mtime, _cached_path
     save_cookies(jar)
+    path = cookie_path()
     _cached_jar = jar
-    new_mtime = _file_mtime()
+    new_mtime = _file_mtime(path)
     _cached_mtime = new_mtime if new_mtime is not None else 0.0
+    _cached_path = path
 
 
 def _get_refresh_lock() -> asyncio.Lock:
@@ -186,9 +198,10 @@ def reload_cookies() -> None:
     suspect the disk file has been updated out-of-band (CLI re-login, manual
     file write, etc.) and they want the running process to pick it up.
     """
-    global _cached_jar, _cached_mtime
+    global _cached_jar, _cached_mtime, _cached_path
     _cached_jar = None
     _cached_mtime = 0.0
+    _cached_path = None
 
 
 def logout() -> None:
@@ -305,7 +318,14 @@ async def verify_auth(jar: LogosCookieJar | None = None) -> dict:
     if jar is None:
         jar = get_cookie_jar()
     if jar is None:
-        return {"authenticated": False, "error": "No cookies found"}
+        result: dict = {
+            "authenticated": False,
+            "error": "No cookies found",
+            "cookie_path": str(cookie_path()),
+        }
+        if hint := legacy_session_hint():
+            result["hint"] = hint
+        return result
 
     url = f"{BASE_URL}/api/app/me"
     headers = {
