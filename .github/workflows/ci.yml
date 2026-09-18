@@ -131,7 +131,6 @@ jobs:
     env:
       RE_DB_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/re_core
       LOGOS_TEST_DB_URL: postgresql://postgres:postgres@localhost:5432/postgres
-      RE_DATA_DIR: ${{ runner.temp }}/re-data
       # The engine builds its whole container for any `plugin` command, so it
       # needs an embedding backend configured. Nothing is embedded by these
       # steps; the suite starts its own fake embed server where it needs one.
@@ -144,6 +143,8 @@ jobs:
         with:
           name: dist
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: Configure core data directory
+        run: echo "RE_DATA_DIR=$RUNNER_TEMP/re-data" >> "$GITHUB_ENV"
       - name: Install exact core and this plugin's wheel
         run: |
           python -m venv "$RUNNER_TEMP/core"
