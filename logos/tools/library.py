@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from urllib.parse import urlencode
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 
 
@@ -38,6 +39,7 @@ from logos.http.client import logos_client
         "required": ["query"],
     },
 )
+@binds_context
 async def handler(
     query: str,
     type: str | None = None,

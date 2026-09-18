@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import re
 
-from research_engine.domain.passages import PassageDraft
-from research_engine.plugins.sdk.interfaces import Chunker
-from research_engine.services.ingestion.chunking.fixed_window import (
-    cap_spans,
-    split_at_boundary,
-)
-from research_engine.services.text.tokens import (
+from research_engine_sdk.chunking import (
+    Chunker,
+    PassageDraft,
     approx_tokens,
+    cap_spans,
     chars_per_token,
+    split_at_boundary,
     token_budget_chars,
+    trim_span,
 )
 
 from logos.ingest.scripture_refs import extract_scripture_refs
@@ -106,19 +105,6 @@ class VerseChunker(Chunker):
         )
 
 
-def _trim_span(text: str, start: int, end: int) -> tuple[int, int]:
-    """Narrow a span past surrounding whitespace.
-
-    Trimming the span rather than the text is what keeps offsets true: stripping
-    the slice would leave the span describing a wider region than its text.
-    """
-    while start < end and text[start].isspace():
-        start += 1
-    while end > start and text[end - 1].isspace():
-        end -= 1
-    return start, end
-
-
 def _chunk_spans(
     text: str, max_chars: int, overlap_chars: int
 ) -> list[tuple[int, int]]:
@@ -163,7 +149,7 @@ def _chunk_spans(
             # a mid-word start costs the chunk its meaning.
             if floor <= reached <= start:
                 start = reached
-        start, end = _trim_span(text, start, end)
+        start, end = trim_span(text, start, end)
         if end > start:
             spans.append((start, end))
     return spans
@@ -173,7 +159,7 @@ def _snap_to_word_start(text: str, index: int) -> int:
     """Move *index* forward to the start of a word.
 
     Overlap reaches back a fixed number of characters, which lands wherever it
-    lands — inside a word as often as not. `_trim_span` cannot repair that: it
+    lands — inside a word as often as not. `trim_span` cannot repair that: it
     strips whitespace, and there is none to strip in the middle of a word.
 
     The corpus carried 2,619 passages like `'ain why it is not too prominent'`

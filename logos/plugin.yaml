@@ -1,0 +1,449 @@
+# Runtime contract for Research Engine, manifest schema v2.
+#
+# Core reads this file from the installed wheel, WITHOUT importing `logos`, and
+# shows it for approval on `research-engine plugin enable logos`. Identity,
+# version, license and Python dependencies live in pyproject.toml, not here.
+#
+# An enabled plugin is trusted in-process Python code. These permissions scope
+# the SDK clients core injects; they are not a sandbox.
+schema_version: 2
+plugin_id: logos
+
+requires:
+  core_api: ">=0.6,<0.7"
+  python: ">=3.11"
+
+permissions:
+  # app.logos.com: every Logos API call. www.logos.com: product-page lookup
+  # for `logos.ingest_book(url=...)`. auth.faithlife.com: the sign-in that
+  # app.logos.com/auth/signin redirects to, reached during session renewal.
+  # Authenticated API calls use the plugin's own cookie-carrying client, because
+  # the scoped HttpClient has no cookie jar or streaming; see README "Permissions".
+  network: egress
+  network_allowlist:
+    - app.logos.com
+    - www.logos.com
+    - auth.faithlife.com
+  # Session renewal launches headless Chromium (Playwright) in-process. The
+  # sign-in page that browser loads also pulls third-party hosts (captcha,
+  # analytics) that no allowlist here can bind.
+  subprocess: true
+  # cookies.json and the Chromium profile, under PluginContext.data_dir.
+  filesystem: plugin_data
+  ingest: true
+  llm: false
+  write: false
+
+provides:
+  document_types:
+    - id: logos_book
+      default_chunker: verse_boundary
+
+  chunkers:
+    - id: verse_boundary
+      entry: logos.ingest.chunker:VerseChunker
+
+  mcp_tools:
+    - id: logos.passage_text
+      entry: logos.tools.passage_text:handler
+      description: Get Bible passage text in one or more translations
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference in Logos format (e.g., "bible.62.3.16-bible.62.3.16") or
+              natural language (e.g., "John 3:16").
+          versions:
+            type: array
+            items:
+              type: string
+            description: Bible version abbreviations (e.g., ["ESV", "NASB", "LEB"]). Defaults to ["LEB"].
+        required:
+        - reference
+    - id: logos.resolve_passage
+      entry: logos.tools.resolve_passage:handler
+      description: Resolve natural language Bible reference to Logos format
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Natural language Bible reference (e.g., "John 3:16", "Genesis 1:1-3").
+        required:
+        - query
+    - id: logos.passage_suggestions
+      entry: logos.tools.passage_suggestions:handler
+      description: Get typeahead passage suggestions
+      input_schema:
+        type: object
+        properties:
+          input:
+            type: string
+            description: Partial passage text to get suggestions for.
+        required:
+        - input
+    - id: logos.passage_guide
+      entry: logos.tools.passage_guide:handler
+      description: Comprehensive passage guide with commentaries and cross-refs
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference in Logos format (e.g., "bible.62.3.16") or natural language.
+        required:
+        - reference
+    - id: logos.exegetical_guide
+      entry: logos.tools.exegetical_guide:handler
+      description: Original language analysis for a passage
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference in Logos format or natural language.
+        required:
+        - reference
+    - id: logos.word_study
+      entry: logos.tools.word_study:handler
+      description: Hebrew/Greek word study guide
+      input_schema:
+        type: object
+        properties:
+          word:
+            type: string
+            description: Hebrew/Greek word or lemma reference.
+        required:
+        - word
+    - id: logos.get_entry
+      entry: logos.tools.get_entry:handler
+      description: Get the full verbatim text of a lexicon/dictionary entry by headword
+      input_schema:
+        type: object
+        properties:
+          resource_id:
+            type: string
+            description: Logos resource ID (e.g. LLS:46.30.16 for BDB).
+          headword:
+            type: string
+            description: Hebrew/Aramaic/Greek headword to look up.
+          language:
+            type: string
+            description: Optional headword-language filter over data-headword-language spans (he,
+              arc observed; unknown codes match nothing).
+          article_id:
+            type: string
+            description: Fetch one article directly (from a candidates list).
+          start:
+            type: integer
+            description: Character offset into the entry HTML text (continuation paging).
+          timeout_s:
+            type: number
+            description: Resolution deadline in seconds (default 55). On expiry returns partial candidates
+              with scan_complete=false. 0 or negative = unbounded (batch survey work).
+        required:
+        - resource_id
+    - id: logos.workflows
+      entry: logos.tools.workflows:handler
+      description: List available Logos workflow templates
+      input_schema:
+        type: object
+        properties: {}
+    - id: logos.commentary
+      entry: logos.tools.commentary:handler
+      description: Get commentary and study resources for a passage
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference (e.g., "bible+esv.66.13.3" or "bible.66.13.3").
+          resource_sets:
+            type: array
+            items:
+              type: string
+            description: 'Resource sets to query. Options: "BibleCommentaries", "StudyBibles", "TextualCommentaries",
+              "OriginalLanguageBibles", "AncientLanguageBibles".'
+          character_limit:
+            type: integer
+            description: Max characters per resource. Defaults to 5000.
+            default: 5000
+        required:
+        - reference
+    - id: logos.cross_references
+      entry: logos.tools.cross_references:handler
+      description: Get cross-references for a passage
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference (e.g., "bible+esv.66.13.3" or "bible.66.13.3").
+        required:
+        - reference
+    - id: logos.parallel_passages
+      entry: logos.tools.parallel_passages:handler
+      description: Get synoptic and thematic parallel passages
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference (e.g., "bible+esv.66.13.3" or "bible.66.13.3").
+        required:
+        - reference
+    - id: logos.relations
+      entry: logos.tools.relations:handler
+      description: Get people, places, things for a passage
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference (e.g., "bible+esv.66.13.3" or "bible.66.13.3").
+        required:
+        - reference
+    - id: logos.search
+      entry: logos.tools.search:handler
+      description: Full-text search across Logos books
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Search query text.
+          scope:
+            type: string
+            description: Optional scope to limit search (e.g., a resource ID).
+          limit:
+            type: integer
+            description: Max results to return. Defaults to 20.
+            default: 20
+        required:
+        - query
+    - id: logos.library
+      entry: logos.tools.library:handler
+      description: Search user's Logos library metadata
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Search query for library resources.
+          type:
+            type: string
+            description: Filter by resource type (e.g., "commentary", "dictionary", "bible").
+          limit:
+            type: integer
+            description: Max results to return. Defaults to 20.
+            default: 20
+          include_unlicensed:
+            type: boolean
+            description: Include resources the user doesn't own. Defaults to false.
+            default: false
+        required:
+        - query
+    - id: logos.toc
+      entry: logos.tools.toc:handler
+      description: Get table of contents for a Logos resource
+      input_schema:
+        type: object
+        properties:
+          resource_id:
+            type: string
+            description: The Logos resource ID.
+        required:
+        - resource_id
+    - id: logos.factbook
+      entry: logos.tools.factbook:handler
+      description: Factbook report for biblical topics
+      input_schema:
+        type: object
+        properties:
+          topic:
+            type: string
+            description: The topic to look up (e.g., "Jesus", "Jerusalem", "Passover").
+        required:
+        - topic
+    - id: logos.study_assistant
+      entry: logos.tools.study_assistant:handler
+      description: AI study assistant (SSE stream)
+      input_schema:
+        type: object
+        properties:
+          message:
+            type: string
+            description: Your question for the study assistant.
+          conversation_id:
+            type: string
+            description: Optional conversation ID to continue a previous conversation.
+        required:
+        - message
+    - id: logos.ai_synopsis
+      entry: logos.tools.ai_synopsis:handler
+      description: AI synopsis of search results
+      input_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: The search query to generate a synopsis for.
+        required:
+        - query
+    - id: logos.notes
+      entry: logos.tools.notes:handler
+      description: Get user notes and highlights
+      input_schema:
+        type: object
+        properties:
+          reference:
+            type: string
+            description: Bible reference or resource reference to get notes for.
+        required:
+        - reference
+    - id: logos.credits
+      entry: logos.tools.credits:handler
+      description: Check feature credit usage
+      input_schema:
+        type: object
+        properties: {}
+    - id: logos.auth_status
+      entry: logos.tools.auth_status:handler
+      description: Check Logos authentication status
+      input_schema:
+        type: object
+        properties: {}
+    - id: logos.diagnose
+      entry: logos.tools.diagnose:handler
+      description: Comprehensive auth diagnostic across all layers (file, jar, cache, live check)
+      input_schema:
+        type: object
+        properties: {}
+    - id: logos.ingest_book
+      entry: logos.tools.ingest_book:handler
+      description: Ingest a Logos book via articles API with verse-boundary chunking
+      input_schema:
+        type: object
+        properties:
+          resource_id:
+            type: string
+            description: The Logos resource ID to ingest (e.g. 'LLS:BLSSDRPCMKRTHLF'). Provide this
+              OR url.
+          url:
+            type: string
+            description: A logos.com product page URL. The resourceId is extracted from the page.
+              Provide this OR resource_id.
+          max_articles:
+            type: integer
+            description: Maximum articles to ingest. Defaults to 0 (all).
+            default: 0
+    - id: logos.ingest_status
+      entry: logos.tools.ingest_status:handler
+      description: Check ingestion status for one or all Logos books
+      input_schema:
+        type: object
+        properties:
+          resource_id:
+            type: string
+            description: Optional resource ID. If omitted, shows all tracked books.
+    - id: logos.ingest_pdf
+      entry: logos.tools.ingest_pdf:handler
+      description: Ingest a PDF through core pipeline with verse-boundary chunking
+      input_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Path to the PDF file to ingest.
+          document_type:
+            type: string
+            description: Document type. Defaults to "logos_book" (verse-boundary chunking).
+            default: logos_book
+        required:
+        - path
+    - id: logos.search_scholars
+      entry: logos.tools.search_scholars:handler
+      description: Search scholar authority records
+      input_schema:
+        type: object
+        properties:
+          name:
+            type: string
+            description: Scholar name to search for (partial match).
+          field:
+            type: string
+            description: Academic field to filter by (e.g., "New Testament", "Pauline studies").
+          passage_book:
+            type: string
+            description: Bible book to find experts for (e.g., "John", "Romans").
+    - id: logos.gap_analysis
+      entry: logos.tools.gap_analysis:handler
+      description: Analyze gaps between ranked scholars and owned resources
+      input_schema:
+        type: object
+        properties:
+          passage_book:
+            type: string
+            description: Bible book to analyze (e.g., "Romans", "Genesis").
+        required:
+        - passage_book
+    - id: logos.record_authority
+      entry: logos.tools.record_authority:handler
+      description: Record scholar authority score
+      input_schema:
+        type: object
+        properties:
+          scholar_name:
+            type: string
+            description: Full name of the scholar.
+          passage_book:
+            type: string
+            description: Bible book (e.g., "Romans").
+          passage_start:
+            type: string
+            description: Start of passage range.
+          passage_end:
+            type: string
+            description: End of passage range.
+          authority_score:
+            type: number
+            description: Authority score 0-1 (1 = highest authority).
+          score_reasons:
+            type: object
+            description: JSON object explaining score components.
+          work_title:
+            type: string
+            description: Title of the work.
+          series_name:
+            type: string
+            description: Commentary series name.
+          series_tier:
+            type: integer
+            description: Series tier (1-5).
+        required:
+        - scholar_name
+        - passage_book
+        - passage_start
+        - passage_end
+        - authority_score
+        - score_reasons
+
+  filter_extensions:
+    - id: scripture_ref_range
+      entry: logos.filters:ScriptureRefRangeFilter
+      description: Filter passages by scripture reference range (e.g., Gen 1:1 to Gen 3:24)
+
+  extraction_schemas:
+    - id: scripture_cross_refs
+      version: 1
+      file: schemas/extraction_schemas/scripture_cross_refs.yaml
+
+  # The logos_* tables (scholar authority records, ingest checkpoints) are
+  # migrated only by `research-engine plugin migrate logos`, from the numbered
+  # SQL files in logos/db/migrations. Core 0.6 has no database permission to
+  # declare: the tools connect with the engine's RE_DB_URL themselves.
+  database:
+    current_revision: 1
+    status_entry: logos.db.migrate:status
+    upgrade_entry: logos.db.migrate:upgrade

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
-from logos.db.migrate import run_migrations
+from logos.lib.context import binds_context
 from logos.db.queries import get_ingest_progress
 
 
@@ -23,9 +23,8 @@ from logos.db.queries import get_ingest_progress
         },
     },
 )
+@binds_context
 async def handler(resource_id: str = "", **kwargs) -> dict:
-    await run_migrations()
-
     from logos.db.pool import get_pool
 
     pool = await get_pool()

@@ -26,6 +26,44 @@ _BOOK_ORDER: dict[str, int] = {
     "2 John": 63, "3 John": 64, "Jude": 65, "Rev": 66,
 }
 
+#: The same 66 books under the names the corpus actually writes. Every locator
+#: in the database spells them out — "2 Samuel 16:1-3", "Psalm 23:1" — while
+#: `_BOOK_ORDER` holds only the SBL abbreviations, so a reference read back from
+#: a locator used to resolve to book 0 and sort before Genesis. Both spellings
+#: have to be accepted; `_BOOK_ORDER` stays the canonical one, because
+#: `ordinal_to_ref` and `_build_book_patterns` search it in reverse and must
+#: keep returning the abbreviation that `metadata.scripture_refs` is written in.
+_FULL_BOOK_NAMES: dict[str, int] = {
+    "Genesis": 1, "Exodus": 2, "Leviticus": 3, "Numbers": 4, "Deuteronomy": 5,
+    "Joshua": 6, "Judges": 7, "Ruth": 8, "1 Samuel": 9, "2 Samuel": 10,
+    "1 Kings": 11, "2 Kings": 12, "1 Chronicles": 13, "2 Chronicles": 14,
+    "Ezra": 15, "Nehemiah": 16, "Esther": 17, "Job": 18, "Psalm": 19,
+    "Psalms": 19, "Proverbs": 20, "Ecclesiastes": 21, "Song of Solomon": 22,
+    "Song of Songs": 22, "Isaiah": 23, "Jeremiah": 24, "Lamentations": 25,
+    "Ezekiel": 26, "Daniel": 27, "Hosea": 28, "Joel": 29, "Amos": 30,
+    "Obadiah": 31, "Jonah": 32, "Micah": 33, "Nahum": 34, "Habakkuk": 35,
+    "Zephaniah": 36, "Haggai": 37, "Zechariah": 38, "Malachi": 39,
+    "Matthew": 40, "Mark": 41, "Luke": 42, "John": 43, "Acts": 44,
+    "Romans": 45, "1 Corinthians": 46, "2 Corinthians": 47, "Galatians": 48,
+    "Ephesians": 49, "Philippians": 50, "Colossians": 51,
+    "1 Thessalonians": 52, "2 Thessalonians": 53, "1 Timothy": 54,
+    "2 Timothy": 55, "Titus": 56, "Philemon": 57, "Hebrews": 58, "James": 59,
+    "1 Peter": 60, "2 Peter": 61, "1 John": 62, "2 John": 63, "3 John": 64,
+    "Jude": 65, "Revelation": 66,
+}
+
+#: Lookup for either spelling, case-insensitively.
+_BOOK_ALIASES: dict[str, int] = {
+    name.lower(): number
+    for name, number in {**_BOOK_ORDER, **_FULL_BOOK_NAMES}.items()
+}
+
+
+def book_number(name: str) -> int:
+    """The canonical number for a book under either spelling, or 0 if unknown."""
+    return _BOOK_ALIASES.get(name.strip().lower(), 0)
+
+
 _REF_RE = re.compile(r"^(.+?)\s+(\d+)(?::(\d+))?")
 
 
@@ -44,15 +82,13 @@ def ref_to_ordinal(ref: str) -> int:
     """
     m = _REF_RE.match(ref.strip())
     if not m:
-        book_num = _BOOK_ORDER.get(ref.strip(), 0)
-        return book_num * 1_000_000
+        return book_number(ref) * 1_000_000
 
     book_str = m.group(1).strip()
     chapter = int(m.group(2))
     verse = int(m.group(3)) if m.group(3) else 0
 
-    book_num = _BOOK_ORDER.get(book_str, 0)
-    return book_num * 1_000_000 + chapter * 1_000 + verse
+    return book_number(book_str) * 1_000_000 + chapter * 1_000 + verse
 
 
 def ordinal_to_ref(ordinal: int) -> str:
@@ -185,11 +221,26 @@ class ScriptureRefRangeFilter:
             sa.text("core.passages p")
         ).where(
             sa.text(
+                # `core.passages.metadata` is a `json` column, and every
+                # `jsonb_*` function takes `jsonb` — so the uncast form raises
+                # `function jsonb_array_elements_text(json) does not exist` for
+                # every value of every argument, and this filter had never run
+                # against any corpus. Core hit the same wall in
+                # `services/search/filter_extensions.py` and fixed it the same
+                # way: cast at the boundary.
+                #
+                # The cast is on `metadata` rather than on the extracted member
+                # so `->` also resolves as the jsonb operator, and the guard is
+                # on the whole expression because a passage whose
+                # `scripture_refs` is absent or is not an array would otherwise
+                # abort the scan rather than simply not match.
                 "EXISTS ("
                 "  SELECT 1"
-                "  FROM jsonb_array_elements_text(p.metadata->'scripture_refs') AS r(ref)"
+                "  FROM jsonb_array_elements_text("
+                "         (p.metadata::jsonb)->'scripture_refs') AS r(ref)"
                 "  WHERE r.ref LIKE ANY(:book_patterns)"
                 ")"
+                " AND jsonb_typeof((p.metadata::jsonb)->'scripture_refs') = 'array'"
             ).bindparams(
                 sa.bindparam("book_patterns", value=patterns)
             )

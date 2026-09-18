@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import tool
 
+from logos.lib.context import binds_context
 from logos.http.client import logos_client
 
 
@@ -14,6 +15,7 @@ from logos.http.client import logos_client
     description="List available Logos workflow templates. Returns workflow definitions that can guide research processes.",
     input_schema={"type": "object", "properties": {}},
 )
+@binds_context
 async def handler(**kwargs) -> str:
     data = await logos_client.get("/api/app/guides-menu/workflowTemplates")
     return json.dumps(data, indent=2)

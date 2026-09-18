@@ -8,13 +8,16 @@ Resolution order:
 
 1. Real process environment — ``LOGOS_USERNAME`` (or ``LOGOS_EMAIL``) +
    ``LOGOS_PASSWORD`` — if something already exported them.
-2. The **main Marginalia repo's ``.env``** file. The core engine loads its
-   ``.env`` through pydantic-settings with an ``RE_`` prefix, so it never
-   exports the un-prefixed ``LOGOS_*`` keys to ``os.environ`` — we read the
-   file directly. Candidate locations, in order:
+2. A ``.env`` file. The engine loads its ``.env`` through pydantic-settings with
+   an ``RE_`` prefix, so it never exports the un-prefixed ``LOGOS_*`` keys to
+   ``os.environ`` — we read the file directly. Candidate locations, in order:
      - ``$LOGOS_ENV_FILE`` (explicit override), then
-     - ``<cwd>/.env`` (the engine runs from the main repo root), then
-     - the sibling ``MarginaliaAI/.env`` next to this plugin checkout.
+     - ``<cwd>/.env`` — ``logos-login`` is run by a person, from a directory
+       they chose, and that is where an engine checkout keeps its ``.env``.
+
+Nothing is looked up relative to this file. The plugin used to try a sibling
+``MarginaliaAI/.env`` next to its own checkout, which means nothing once the
+plugin is installed from a wheel into site-packages.
 
 The parser is dependency-free and handles quoted values / special characters,
 so passwords containing shell metacharacters are read verbatim.
@@ -51,12 +54,7 @@ def _env_file_candidates() -> list[Path]:
     override = os.environ.get("LOGOS_ENV_FILE")
     if override:
         candidates.append(Path(override).expanduser())
-    # The engine runs from the main repo root, where its .env lives.
     candidates.append(Path.cwd() / ".env")
-    # Sibling main repo next to this plugin checkout
-    # (.../repos/marginalia-plugin-logos/logos/auth/credentials.py).
-    repos_dir = Path(__file__).resolve().parents[3]
-    candidates.append(repos_dir / "MarginaliaAI" / ".env")
 
     seen: set[Path] = set()
     unique: list[Path] = []

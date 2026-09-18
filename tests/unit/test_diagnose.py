@@ -16,19 +16,18 @@ import pytest
 
 @pytest.fixture
 def cookies_file(tmp_path, monkeypatch):
-    path = tmp_path / "cookies.json"
-    monkeypatch.setattr("logos.lib.constants.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.manager.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.cookie_store.COOKIE_PATH", path)
-    monkeypatch.setattr("logos.auth.cookie_store.CONFIG_DIR", tmp_path)
-    monkeypatch.setattr("logos.auth.diagnose.COOKIE_PATH", path)
+    from logos.lib.context import reset_context
+
+    reset_context()
+    monkeypatch.setenv("RE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    path = tmp_path / "plugin-data" / "logos" / "cookies.json"
 
     from logos.auth import manager
-    manager._cached_jar = None
-    manager._cached_mtime = 0.0
+    manager.reload_cookies()
     yield path
-    manager._cached_jar = None
-    manager._cached_mtime = 0.0
+    manager.reload_cookies()
+    reset_context()
 
 
 def _write_jar(path, cookies):
@@ -47,8 +46,39 @@ async def test_no_file(cookies_file):
                new=AsyncMock(return_value={"authenticated": False, "error": "No cookies found"})):
         result = await run_diagnose()
     assert result["file"]["exists"] is False
+    assert result["file"]["path"] == str(cookies_file)
     assert result["jar"] is None
+    assert result["legacy_session"] is None
     assert result["live_check"]["authenticated"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_left_at_the_pre_0_2_location_is_named(cookies_file, tmp_path):
+    """An upgrade leaves the session behind; say where, and how to move it."""
+    legacy = tmp_path / "home" / ".logos-mcp" / "cookies.json"
+    _write_jar(legacy, [_cookie("auth2", "SENTINEL-COOKIE-VALUE")])
+    from logos.auth.diagnose import run_diagnose
+    with patch("logos.auth.diagnose.verify_auth",
+               new=AsyncMock(return_value={"authenticated": False})):
+        result = await run_diagnose()
+
+    assert result["file"]["exists"] is False
+    hint = result["legacy_session"]["hint"]
+    assert str(legacy) in hint
+    assert "logos-login --migrate-data" in hint
+    assert "SENTINEL-COOKIE-VALUE" not in json.dumps(result)
+    assert legacy.exists(), "diagnosing must not migrate anything"
+
+
+@pytest.mark.asyncio
+async def test_no_legacy_hint_once_the_new_location_has_a_session(cookies_file, tmp_path):
+    _write_jar(tmp_path / "home" / ".logos-mcp" / "cookies.json", [_cookie("auth2", "old")])
+    _write_jar(cookies_file, [_cookie("auth2", "new")])
+    from logos.auth.diagnose import run_diagnose
+    with patch("logos.auth.diagnose.verify_auth",
+               new=AsyncMock(return_value={"authenticated": True})):
+        result = await run_diagnose()
+    assert result["legacy_session"] is None
 
 
 @pytest.mark.asyncio
@@ -111,3 +141,18 @@ async def test_server_unreachable(cookies_file):
     assert result["jar"]["has_auth2"] is True
     assert result["live_check"]["authenticated"] is False
     assert "Connection refused" in result["live_check"]["error"]
+
+
+def test_help_does_not_run_the_diagnostic(capsys, monkeypatch):
+    """`--help` is how CI proves the console script starts; it must not probe
+    the session or the network."""
+    import logos.cli.diagnose as cli
+
+    async def _must_not_run():
+        raise AssertionError("--help ran the diagnostic")
+
+    monkeypatch.setattr(cli, "run_diagnose", _must_not_run)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--help"])
+    assert exit_info.value.code == 0
+    assert "logos-diagnose" in capsys.readouterr().out

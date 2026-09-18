@@ -91,12 +91,22 @@ class TestBuildBookPatterns:
 
 
 class TestScriptureRefRangeFilter:
-    def test_protocol_conformance(self):
-        pytest.importorskip("research_engine")
-        from research_engine.domain.filter_extension import FilterExtension
+    """Shape only. Whether the SQL *runs* is tested in tests/integration.
 
+    These assertions are on the compiled statement as a string, and a string
+    assertion cannot tell working SQL from SQL Postgres refuses to plan. That is
+    not a hypothetical: `jsonb_array_elements_text(p.metadata->'scripture_refs')`
+    raised `function jsonb_array_elements_text(json) does not exist` for every
+    argument on every corpus, while every test here passed. Keep these for the
+    cheap checks, and put anything about behaviour in the suite that executes.
+    """
+
+    def test_protocol_conformance(self):
+        """Core's `FilterExtension` protocol, by member; `isinstance` against core
+        itself runs in the integration suite."""
         f = ScriptureRefRangeFilter()
-        assert isinstance(f, FilterExtension)
+        for member in ("filter_id", "input_schema", "description", "build_clause"):
+            assert hasattr(f, member), member
 
     def test_properties(self):
         f = ScriptureRefRangeFilter()
@@ -122,3 +132,73 @@ class TestScriptureRefRangeFilter:
         clause = f.build_clause({"start": "Rom 3"})
         compiled = str(clause.compile())
         assert "scripture_refs" in compiled
+
+
+class TestFullBookNames:
+    """Locators spell their books out; the ordinal lookup has to accept that.
+
+    Every `passages.locator` in the corpus reads "2 Samuel 16:1-3" or
+    "Psalm 23:1", never "2 Sam" or "Ps". Before these aliases existed each of
+    those resolved to book 0 and sorted ahead of Genesis, so a range filter fed
+    a reference straight out of the database silently matched nothing.
+    """
+
+    CORPUS_BOOK_NAMES = [
+        "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy", "Joshua",
+        "Judges", "Ruth", "1 Samuel", "2 Samuel", "1 Kings", "2 Kings",
+        "1 Chronicles", "2 Chronicles", "Ezra", "Nehemiah", "Esther", "Job",
+        "Psalm", "Proverbs", "Ecclesiastes", "Song of Solomon", "Isaiah",
+        "Jeremiah", "Lamentations", "Ezekiel", "Daniel", "Hosea", "Joel",
+        "Amos", "Obadiah", "Jonah", "Micah", "Nahum", "Habakkuk", "Zephaniah",
+        "Haggai", "Zechariah", "Malachi", "Matthew", "Mark", "Luke", "John",
+        "Acts", "Romans", "1 Corinthians", "2 Corinthians", "Galatians",
+        "Ephesians", "Philippians", "Colossians", "1 Thessalonians",
+        "2 Thessalonians", "1 Timothy", "2 Timothy", "Titus", "Philemon",
+        "Hebrews", "James", "1 Peter", "2 Peter", "1 John", "2 John", "3 John",
+        "Jude", "Revelation",
+    ]
+
+    @pytest.mark.parametrize("book", CORPUS_BOOK_NAMES)
+    def test_every_book_name_in_the_corpus_resolves(self, book):
+        assert ref_to_ordinal(f"{book} 1:1") // 1_000_000 > 0
+
+    def test_the_corpus_names_cover_the_whole_canon(self):
+        numbers = {ref_to_ordinal(f"{b} 1") // 1_000_000 for b in self.CORPUS_BOOK_NAMES}
+        assert numbers == set(range(1, 67))
+
+    @pytest.mark.parametrize(
+        ("full", "abbreviated"),
+        [
+            ("Genesis 1:1", "Gen 1:1"),
+            ("2 Samuel 16:1", "2 Sam 16:1"),
+            ("Psalm 23:1", "Ps 23:1"),
+            ("Song of Solomon 2:1", "Song 2:1"),
+            ("1 Corinthians 13:4", "1 Cor 13:4"),
+            ("Revelation 22", "Rev 22"),
+        ],
+    )
+    def test_spellings_agree(self, full, abbreviated):
+        assert ref_to_ordinal(full) == ref_to_ordinal(abbreviated)
+
+    def test_case_is_ignored(self):
+        assert ref_to_ordinal("genesis 1:1") == ref_to_ordinal("Gen 1:1")
+
+    def test_plural_psalms_matches_singular(self):
+        assert ref_to_ordinal("Psalms 23:1") == ref_to_ordinal("Psalm 23:1")
+
+    def test_unknown_book_still_resolves_to_zero(self):
+        assert ref_to_ordinal("Nephi 1:1") // 1_000_000 == 0
+
+    def test_reverse_lookup_still_returns_the_abbreviation(self):
+        """`scripture_refs` are written abbreviated, so patterns must stay so.
+
+        The aliases are for reading references in; adding them must not change
+        what `ordinal_to_ref` and `_build_book_patterns` write out, or the LIKE
+        patterns would stop matching the data they are matched against.
+        """
+        assert ordinal_to_ref(ref_to_ordinal("2 Samuel 16:1")) == "2 Sam 16:1"
+        assert ordinal_to_ref(ref_to_ordinal("Psalm 23")) == "Ps 23"
+        patterns = _build_book_patterns(
+            ref_to_ordinal("Genesis 1"), ref_to_ordinal("Genesis 2")
+        )
+        assert patterns == ["Gen 1", "Gen 1:%", "Gen 2", "Gen 2:%"]

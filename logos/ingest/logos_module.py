@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from research_engine.plugins.sdk.interfaces import IngestionModule
+from research_engine_sdk import IngestionModule
 
 
 class LogosBookModule(IngestionModule):

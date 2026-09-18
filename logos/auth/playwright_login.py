@@ -2,7 +2,7 @@
 
 The Faithlife sign-in form is reCAPTCHA-protected, so unattended *password*
 login from a headless browser gets scored as a bot and rejected. Instead we
-keep a persistent browser profile (``BROWSER_PROFILE_DIR``) that holds the
+keep a persistent browser profile (``browser_profile_dir()``) that holds the
 long-lived Faithlife SSO cookie:
 
 * :func:`interactive_login` — a one-time headed login (the user clears reCAPTCHA
@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from logos.lib.constants import BASE_URL, BROWSER_PROFILE_DIR
+from logos.lib.constants import BASE_URL, browser_profile_dir, ensure_private_dir
 from logos.lib.logger import log
 from logos.lib.types import LogosCookie, LogosCookieJar
 
@@ -96,7 +96,7 @@ def profile_seeded() -> bool:
     absent, no login has ever run, so a silent renewal would just waste ~30s
     spinning up a browser only to fail — callers should fast-fail instead.
     """
-    return (BROWSER_PROFILE_DIR / "Default").is_dir()
+    return (browser_profile_dir() / "Default").is_dir()
 
 
 def _import_playwright():
@@ -104,8 +104,9 @@ def _import_playwright():
         from playwright.async_api import async_playwright
     except ImportError as exc:
         raise RuntimeError(
-            "Playwright is required for login. "
-            "Install with: pip install playwright && playwright install chromium"
+            "Playwright is required for login. Install it with: "
+            "pip install 'marginalia-ai-plugin-logos[auth]' && "
+            "python -m playwright install chromium"
         ) from exc
     return async_playwright
 
@@ -119,7 +120,7 @@ async def _launch_profile_context(p, *, headless: bool, no_viewport: bool = Fals
     ``logos-login`` — would otherwise fail with an opaque internal error. Catch
     that specific case and raise actionable guidance; re-raise anything else.
     """
-    BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile = ensure_private_dir(browser_profile_dir())
     kwargs: dict = {
         "headless": headless,
         "args": _LAUNCH_ARGS,
@@ -128,7 +129,7 @@ async def _launch_profile_context(p, *, headless: bool, no_viewport: bool = Fals
     if no_viewport:
         kwargs["no_viewport"] = True
     try:
-        return await p.chromium.launch_persistent_context(str(BROWSER_PROFILE_DIR), **kwargs)
+        return await p.chromium.launch_persistent_context(str(profile), **kwargs)
     except Exception as exc:
         msg = str(exc)
         if "SingletonLock" in msg or "ProcessSingleton" in msg or "already in use" in msg.lower():

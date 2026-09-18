@@ -20,12 +20,10 @@ from uuid import UUID
 
 import httpx
 
-from research_engine.domain.errors import EmbeddingUnavailable
-from research_engine.domain.nodes import build_node_tree
-from research_engine.domain.passages import PassageDraft
-from research_engine.plugins.sdk import tool
+from research_engine_sdk import HttpClient, PassageDraft, tool
 
-from logos.db.migrate import run_migrations
+from logos.lib.context import binds_context
+from logos.lib.errors import is_embedding_unavailable
 from logos.db.queries import (
     get_article_page_markers,
     get_all_pending_chunks,
@@ -47,6 +45,7 @@ from logos.db.queries import (
 )
 from logos.http.client import logos_client
 from logos.ingest.chunker import VerseChunker
+from logos.ingest.nodes import build_node_tree
 from logos.ingest.scripture_refs import extract_scripture_refs
 from logos.ingest.toc_walker import TocOffsetIndex, walk_toc
 from logos.lib.logger import log
@@ -196,30 +195,36 @@ async def _preload_resume_queue(
 # ── URL → resourceId resolution ───────────────────────────────────────────────
 
 
-async def _resolve_url_to_resource_id(url: str) -> str:
+async def _resolve_url_to_resource_id(url: str, http: HttpClient | None = None) -> str:
     """Fetch a logos.com product page and extract its LLS: resourceId.
 
-    The product page embeds the library resourceId in plain text, so we just
-    fetch with an unauthenticated httpx client and regex it out.
+    The product page embeds the library resourceId in plain text, so an
+    unauthenticated fetch and a regex are enough. Inside the engine that fetch
+    goes through the scoped *http* client, which holds it to the manifest's
+    network allowlist; outside it (tests, scripts) a plain httpx client does.
     """
     host = urlparse(url).hostname or ""
     if not (host == "logos.com" or host.endswith(".logos.com")):
         raise ValueError(f"Not a logos.com URL: {url}")
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        response = await client.get(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        )
-        response.raise_for_status()
+    if http is not None:
+        page = (await http.get(url)).decode("utf-8", errors="replace")
+    else:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+            response.raise_for_status()
+        page = response.text
 
-    matches = list(dict.fromkeys(_LLS_RE.findall(response.text)))
+    matches = list(dict.fromkeys(_LLS_RE.findall(page)))
     if not matches:
         raise ValueError(
             f"Could not find an LLS: resourceId on {url}. "
@@ -921,17 +926,17 @@ async def _store_with_retry(
             metadata=doc_metadata,
             full_text=document_text,
         )
-    except EmbeddingUnavailable:
-        # Halving answers "this batch was too big". It cannot answer "the
-        # embedding backend is not there", and splitting 50 passages into
-        # 6+6+6+7+... against a host that is switched off just makes the same
-        # call sixteen times. The walk's checkpointed chunks survive, so the
-        # storage phase resumes once embedding is back.
-        log(f"Batch {batch_key}: embedding is unavailable — stopping rather "
-            f"than halving. The checkpointed chunks are kept; re-run this "
-            f"book once the embedding server is reachable.")
-        raise
     except Exception as e:
+        if is_embedding_unavailable(e):
+            # Halving answers "this batch was too big". It cannot answer "the
+            # embedding backend is not there", and splitting 50 passages into
+            # 6+6+6+7+... against a host that is switched off just makes the
+            # same call sixteen times. The walk's checkpointed chunks survive,
+            # so the storage phase resumes once embedding is back.
+            log(f"Batch {batch_key}: embedding is unavailable — stopping rather "
+                f"than halving. The checkpointed chunks are kept; re-run this "
+                f"book once the embedding server is reachable.")
+            raise
         error_msg = str(e)
         log(f"Batch {batch_key}: failed to store {count} passages "
             f"(depth={depth}): {error_msg}")
@@ -1294,9 +1299,10 @@ async def _store_resource(
         log(f"{resource_id}: {unanchored} chunk(s) reference an article with no "
             f"stored text and were left out rather than anchored to the wrong place")
 
-    sections = _book_sections(articles, spans, headings)
     node_drafts = build_node_tree(
-        sections, text_length=len(document_text), title=resource_title
+        _book_sections(articles, spans, headings),
+        text_length=len(document_text),
+        title=resource_title,
     )
 
     log(f"{resource_id}: storing {len(drafts)} passages, {len(node_drafts)} nodes, "
@@ -1384,9 +1390,10 @@ async def rechunk_and_store_resource(
             draft.position = len(drafts)
             drafts.append(draft)
 
-    sections = _book_sections(articles, spans, headings)
     node_drafts = build_node_tree(
-        sections, text_length=len(document_text), title=resource_title
+        _book_sections(articles, spans, headings),
+        text_length=len(document_text),
+        title=resource_title,
     )
 
     log(f"{resource_id}: re-chunked {len(articles)} articles into {len(drafts)} "
@@ -1499,6 +1506,7 @@ def _normalize_results(walk_result, store_result) -> tuple[dict, dict]:
         },
     },
 )
+@binds_context
 async def handler(
     resource_id: str | None = None,
     url: str | None = None,
@@ -1509,10 +1517,8 @@ async def handler(
     if not resource_id and not url:
         raise ValueError("Provide either resource_id or url")
     if not resource_id:
-        resource_id = await _resolve_url_to_resource_id(url)
+        resource_id = await _resolve_url_to_resource_id(url, http=kwargs.get("http"))
         log(f"Resolved {url} → {resource_id}")
-
-    await run_migrations()
 
     book_data = await _fetch_book_data(resource_id)
 
@@ -1553,7 +1559,9 @@ async def handler(
         store_result = await _store_resource(
             resource_id, ingestion, resource_title, doc_metadata,
         )
-    except EmbeddingUnavailable:
+    except Exception as exc:
+        if not is_embedding_unavailable(exc):
+            raise
         # The chunks are checkpointed; re-running the tool resumes at the store.
         log(f"{resource_id}: embedding is unavailable — the walk is checkpointed, "
             f"re-run once the embedding server is reachable.")

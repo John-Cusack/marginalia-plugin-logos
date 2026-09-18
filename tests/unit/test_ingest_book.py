@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from research_engine.domain.passages import PassageDraft
+from research_engine_sdk import PassageDraft
 
 
 @pytest.fixture(autouse=True)
@@ -410,6 +410,29 @@ async def test_resolve_url_extracts_lls_id():
             "https://www.logos.com/product/248390/blessed-are-the-peacemakers"
         )
     assert rid == "LLS:BLSSDRPCMKRTHLF"
+
+
+@pytest.mark.asyncio
+async def test_resolve_url_uses_the_scoped_http_client_when_core_injects_one():
+    """Inside the engine the fetch is held to the manifest allowlist, so it must
+    not fall back to a private httpx client."""
+    from logos.tools import ingest_book
+
+    class _Scoped:
+        def __init__(self): self.urls = []
+        async def get(self, url):
+            self.urls.append(url)
+            return b'<a href="logosres:LLS:BLSSDRPCMKRTHLF">Open</a>'
+
+    def _no_httpx(*a, **kw):
+        raise AssertionError("bypassed the scoped HttpClient")
+
+    scoped = _Scoped()
+    url = "https://www.logos.com/product/248390/blessed-are-the-peacemakers"
+    with patch.object(ingest_book.httpx, "AsyncClient", _no_httpx):
+        rid = await ingest_book._resolve_url_to_resource_id(url, http=scoped)
+    assert rid == "LLS:BLSSDRPCMKRTHLF"
+    assert scoped.urls == [url]
 
 
 @pytest.mark.asyncio
@@ -1118,7 +1141,7 @@ async def test_store_does_not_halve_when_embedding_is_gone():
     way, so the useful behaviour is to stop and let the storage phase resume
     once embedding is reachable.
     """
-    from research_engine.domain.errors import EmbeddingUnavailable
+    from research_engine_sdk import EmbeddingUnavailable
 
     from logos.tools.ingest_book import _store_with_retry
 
@@ -1147,3 +1170,70 @@ async def test_store_does_not_halve_when_embedding_is_gone():
         )
 
     assert call_count == 1, f"halved into {call_count} attempts instead of stopping"
+
+
+#: Core's own class, name for name — and not the SDK's, which is the whole
+#: problem `logos.lib.errors` exists for. Built with `type()` so the name is
+#: exactly `EmbeddingUnavailable` without shadowing the SDK's in this module.
+EngineEmbeddingUnavailable = type(
+    "EmbeddingUnavailable",
+    (Exception,),
+    {"__module__": "research_engine.domain.errors"},
+)
+
+
+async def test_the_engines_own_embedding_error_stops_the_store_too():
+    """Research Engine 0.6 raises its own `EmbeddingUnavailable`, not the SDK's.
+
+    Caught by class alone, the outage looked like an ordinary failure and the
+    batch was halved against a dead host all over again.
+    """
+    from logos.tools.ingest_book import _store_with_retry
+
+    call_count = 0
+
+    async def mock_ingest_drafts(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise EngineEmbeddingUnavailable("Cannot reach the embedding server")
+
+    mock_ingestion = AsyncMock()
+    mock_ingestion.find_existing.return_value = []
+    mock_ingestion.ingest_drafts.side_effect = mock_ingest_drafts
+
+    with (
+        patch("logos.tools.ingest_book.mark_chunks_stored", new_callable=AsyncMock),
+        patch("logos.tools.ingest_book.mark_chunks_failed", new_callable=AsyncMock),
+        patch("logos.tools.ingest_book.reassign_chunk_batch_keys", new_callable=AsyncMock),
+        pytest.raises(EngineEmbeddingUnavailable),
+    ):
+        await _store_with_retry(
+            "test-resource", "b0000", [_make_chunk_row(i) for i in range(50)],
+            mock_ingestion, {"resource_id": "test-resource"}, "Test Book",
+        )
+
+    assert call_count == 1, f"halved into {call_count} attempts instead of stopping"
+
+
+def test_an_unrelated_error_is_not_mistaken_for_an_outage():
+    from logos.lib.errors import is_embedding_unavailable
+
+    class EmbeddingUnavailable(Exception):
+        """Same name, someone else's package."""
+
+    assert not is_embedding_unavailable(EmbeddingUnavailable("elsewhere"))
+    assert not is_embedding_unavailable(ValueError("unrelated"))
+    assert is_embedding_unavailable(EngineEmbeddingUnavailable("the host is off"))
+
+
+def test_an_outage_wrapped_in_another_error_is_still_an_outage():
+    """Core raises it from inside a transaction, which may re-raise wrapped."""
+    from logos.lib.errors import is_embedding_unavailable
+
+    try:
+        try:
+            raise EngineEmbeddingUnavailable("the host is off")
+        except EngineEmbeddingUnavailable as cause:
+            raise RuntimeError("storing the batch failed") from cause
+    except RuntimeError as wrapped:
+        assert is_embedding_unavailable(wrapped)
