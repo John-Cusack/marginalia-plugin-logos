@@ -4,7 +4,7 @@ All notable changes to `marginalia-ai-plugin-logos`. Versions follow
 [PEP 440](https://peps.python.org/pep-0440/); while the version is 0.x, a minor
 release may break things.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-09-18
 
 The first release as a Python package. Everything below marked **Breaking**
 needs action from anyone running 0.1.x; see "Upgrading from 0.1.x" in the

@@ -231,7 +231,7 @@ dev = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.29,<1" },
     { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "marginalia-ai-sdk", directory = "vendor/marginalia-ai-sdk" },
+    { name = "marginalia-ai-sdk", specifier = ">=0.6,<0.7" },
     { name = "playwright", marker = "extra == 'auth'", specifier = ">=1.40,<2" },
     { name = "pydantic", specifier = ">=2.5,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
@@ -248,18 +248,16 @@ dev = [
 
 [[package]]
 name = "marginalia-ai-sdk"
-source = { directory = "vendor/marginalia-ai-sdk" }
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "packaging", specifier = ">=23" },
-    { name = "pydantic", specifier = ">=2.5,<3" },
-    { name = "pyyaml", specifier = ">=6,<7" },
+sdist = { url = "https://files.pythonhosted.org/packages/a6/31/242c8a280eeeaf781cfc8d347fc047aaded6e964423d147345922a2ed847/marginalia_ai_sdk-0.6.0.tar.gz", hash = "sha256:254d4da1584101cd3cc95eabdb41776d6f8526524a4eed0caf4c160d2e8c3777", size = 18271, upload-time = "2026-09-18T03:36:19.851Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/cc/59121a2ed93d9246ee6077ee5054c78a34b50fb4c73ec5a3e7f0c6a16e2d/marginalia_ai_sdk-0.6.0-py3-none-any.whl", hash = "sha256:4e0324d7b862dffc36599b7b58d75caf87cfe1fdefbc49777e3f8c82c5e0f5e7", size = 20586, upload-time = "2026-09-18T03:36:18.525Z" },
 ]
 
 [[package]]

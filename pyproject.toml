@@ -76,16 +76,10 @@ packages = ["logos"]
 
 [tool.hatch.build.targets.sdist]
 # An allowlist, so nothing local — cookies, profiles, checkpoints, `.env`,
-# caches, the vendored SDK — can reach an artifact by being forgotten.
+# caches, and developer-only files — can reach an artifact by being forgotten.
 only-include = ["logos", "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]
 exclude = ["__pycache__", "*.pyc"]
 
-# LOCAL ONLY, until marginalia-ai-sdk 0.6.0 is published: a copy of the SDK from
-# MarginaliaAI (see vendor/README.md). Affects uv resolution in this checkout;
-# the built wheel still requires the SDK from the index. The release workflow
-# refuses to run while this table exists.
-[tool.uv.sources]
-marginalia-ai-sdk = { path = "vendor/marginalia-ai-sdk" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -52,12 +52,6 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - name: Build plugin
         run: uv build --out-dir dist
-      - name: Build SDK artifact
-        # Pre-release: marginalia-ai-sdk 0.6.0 is not published, so the
-        # environment installs the vendored copy as a wheel, not a path (see
-        # vendor/README.md). Once it is published, delete this step and let pip
-        # resolve the SDK from the index.
-        run: uv build vendor/marginalia-ai-sdk --wheel --out-dir sdk-dist
       - name: Inspect artifacts
         run: uv run --no-project --with pyyaml python scripts/check_dist.py dist
       - name: twine check --strict
@@ -66,7 +60,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/smoke"
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/smoke/bin/python" -m pip install sdk-dist/*.whl dist/*.whl \
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install dist/*.whl \
             "pytest>=8,<9" "pytest-asyncio>=0.23,<1" "pyyaml>=6,<7"
       - name: Discover and load from site-packages
         working-directory: ${{ runner.temp }}
@@ -86,9 +80,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
-          path: |
-            dist/
-            sdk-dist/
+          path: dist/
 
   migrations:
     # The plugin's own schema lifecycle, on a disposable database. Needs no core.
@@ -152,11 +144,11 @@ jobs:
         with:
           name: dist
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-      - name: Install exact core, the SDK artifact and this plugin's wheel
+      - name: Install exact core and this plugin's wheel
         run: |
           python -m venv "$RUNNER_TEMP/core"
           "$RUNNER_TEMP/core/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/core/bin/python" -m pip install sdk-dist/*.whl \
+          "$RUNNER_TEMP/core/bin/python" -m pip install \
             "${{ vars.RE_CORE_SPEC }}" dist/*.whl \
             "pytest>=8,<9" "pytest-asyncio>=0.23,<1" "pyyaml>=6,<7"
       - name: Core's schema

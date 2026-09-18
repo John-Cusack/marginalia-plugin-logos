@@ -225,13 +225,6 @@ uv sync
 uv run pytest tests/unit -q
 ```
 
-<!-- pre-release:sdk -->
-Until `marginalia-ai-sdk` 0.6.0 is published, this checkout resolves the SDK
-from `vendor/marginalia-ai-sdk`, a copy of it declared in `pyproject.toml`
-under `[tool.uv.sources]`. See
-[vendor/README.md](vendor/README.md); the release workflow refuses to publish
-until it is gone.
-<!-- /pre-release:sdk -->
 
 - **Unit tests** use the SDK only; core is never installed for them.
 - **Core integration tests** need Research Engine 0.6 installed and a disposable
