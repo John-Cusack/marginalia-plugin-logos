@@ -313,8 +313,7 @@ def _run_cli(argv: list[str] | None) -> int:
     parser.add_argument("command", choices=["status", "upgrade"])
     parser.add_argument(
         "--dsn",
-        help="PostgreSQL URL. Defaults to RE_DB_URL, then DATABASE_URL, then the "
-        "engine's local default.",
+        help="PostgreSQL URL. Defaults to RE_DB_URL, then DATABASE_URL.",
     )
     args = parser.parse_args(argv)
     dsn = resolve_dsn(args.dsn)

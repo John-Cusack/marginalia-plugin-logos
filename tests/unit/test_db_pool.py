@@ -1,22 +1,25 @@
 """Tests for the asyncpg DSN resolution in logos.db.pool.
 
-Pins the resolution order — explicit DSN, RE_DB_URL, DATABASE_URL, then a
-default that mirrors the core engine so the plugin works on a stock dev box
-without env wiring — plus stripping of the SQLAlchemy
-``+asyncpg`` suffix wherever it appears, and that a DSN can be printed without
-its password.
+Pins explicit, core-context, and standalone-environment precedence, driver
+normalisation, missing-configuration failure, and credential redaction.
 """
 
 from __future__ import annotations
 
 import pytest
+from research_engine_sdk import PluginConfigError, PluginContext
 
 
 @pytest.fixture(autouse=True)
-def _clear_db_env(monkeypatch):
-    """Each test gets a clean env — no inherited DSN from the shell."""
+def _clear_db_sources(monkeypatch):
+    """Each test gets a clean context and environment."""
+    from logos.lib.context import reset_context
+
+    reset_context()
     monkeypatch.delenv("RE_DB_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    yield
+    reset_context()
 
 
 class TestDsnResolution:
@@ -36,13 +39,11 @@ class TestDsnResolution:
         monkeypatch.setenv("DATABASE_URL", "postgresql://loser@h/d")
         assert _get_dsn() == "postgresql://winner@h/d"
 
-    def test_falls_back_to_default_when_unset(self):
-        from logos.db.pool import _DEFAULT_DSN, _get_dsn
-        assert _get_dsn() == _DEFAULT_DSN
-        # Sanity-check the default points at the standard local Docker Postgres
-        # (must stay aligned with the core engine's default db_url).
-        assert _DEFAULT_DSN.startswith("postgresql://")
-        assert "localhost:5435" in _DEFAULT_DSN
+    def test_refuses_missing_configuration(self):
+        from logos.db.pool import _get_dsn
+
+        with pytest.raises(PluginConfigError, match="no database URL"):
+            _get_dsn()
 
     def test_strips_sqlalchemy_driver_suffix(self, monkeypatch):
         """Core uses postgresql+asyncpg://; asyncpg.connect rejects that form."""
@@ -57,6 +58,23 @@ class TestDsnResolution:
         assert (
             resolve_dsn("postgresql+asyncpg://core@h/d") == "postgresql://core@h/d"
         )
+
+    def test_core_context_beats_the_environment(self, tmp_path, monkeypatch):
+        from logos.db.pool import _get_dsn
+        from logos.lib.context import bind_context
+
+        monkeypatch.setenv("RE_DB_URL", "postgresql://environment@h/d")
+        bind_context(
+            PluginContext(
+                plugin_id="logos",
+                data_dir=tmp_path,
+                distribution_name="marginalia-ai-plugin-logos",
+                distribution_version="0.2.1",
+                database_url="postgresql+asyncpg://core:secret@h/core",
+            )
+        )
+
+        assert _get_dsn() == "postgresql://core:secret@h/core"
 
 
 class TestRedaction:

@@ -143,9 +143,16 @@ def _check_metadata(metadata, version: str, label: str) -> list[str]:
     if any(c.startswith("License ::") for c in metadata.get_all("Classifier") or []):
         problems.append(f"{label}: license classifier conflicts with License-Expression")
     requires = metadata.get_all("Requires-Dist") or []
-    if not any(re.fullmatch(r"marginalia-ai-sdk\s*(<0\.7,\s*>=0\.6|>=0\.6,\s*<0\.7)", r)
-               for r in requires):
-        problems.append(f"{label}: Requires-Dist lacks marginalia-ai-sdk>=0.6,<0.7: {requires}")
+    if not any(
+        re.fullmatch(
+            r"marginalia-ai-sdk\s*(<0\.7,\s*>=0\.6\.1|>=0\.6\.1,\s*<0\.7)", r
+        )
+        for r in requires
+    ):
+        problems.append(
+            f"{label}: Requires-Dist lacks marginalia-ai-sdk>=0.6.1,<0.7: "
+            f"{requires}"
+        )
     # The plugin depends on the SDK, never on the core application, and never on
     # a pre-rename MarginaliaAI distribution.
     for forbidden in ("marginalia-ai", "research-engine", "research-engine-sdk",
