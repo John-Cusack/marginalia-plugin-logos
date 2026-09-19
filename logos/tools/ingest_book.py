@@ -10,24 +10,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-from bisect import bisect_right
 import re
 import time
+from bisect import bisect_right
 from collections.abc import AsyncGenerator, AsyncIterable, Iterable
 from dataclasses import dataclass
 from urllib.parse import quote, urlparse
 from uuid import UUID
 
 import httpx
+from research_engine_sdk import EmbeddingUnavailable, HttpClient, PassageDraft, tool
 
-from research_engine_sdk import HttpClient, PassageDraft, tool
-
-from logos.lib.context import binds_context
-from logos.lib.errors import is_embedding_unavailable
 from logos.db.queries import (
-    get_article_page_markers,
     get_all_pending_chunks,
     get_article_metadata,
+    get_article_page_markers,
     get_article_texts,
     get_chunks_for_batch,
     get_ingest_progress,
@@ -48,6 +45,7 @@ from logos.ingest.chunker import VerseChunker
 from logos.ingest.nodes import build_node_tree
 from logos.ingest.scripture_refs import extract_scripture_refs
 from logos.ingest.toc_walker import TocOffsetIndex, walk_toc
+from logos.lib.context import binds_context
 from logos.lib.logger import log
 from logos.parsers.html_to_markdown import html_to_markdown_with_refs
 
@@ -77,6 +75,17 @@ _LLS_RE = re.compile(r"LLS:[A-Z0-9]+")
 # Matches walker batch keys (e.g. "b0007"). Halving suffixes such as "b0007a"
 # are tolerated; only the leading numeric portion is meaningful for resume.
 _BATCH_KEY_DIGITS_RE = re.compile(r"^b(\d+)")
+
+def _is_embedding_unavailable(exc: BaseException) -> bool:
+    """Recognise the SDK error through a wrapper's cause chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, EmbeddingUnavailable):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 # ── Canonical batch-state resolver (resume + active-key derivation) ──────────
@@ -927,7 +936,7 @@ async def _store_with_retry(
             full_text=document_text,
         )
     except Exception as e:
-        if is_embedding_unavailable(e):
+        if _is_embedding_unavailable(e):
             # Halving answers "this batch was too big". It cannot answer "the
             # embedding backend is not there", and splitting 50 passages into
             # 6+6+6+7+... against a host that is switched off just makes the
@@ -1560,7 +1569,7 @@ async def handler(
             resource_id, ingestion, resource_title, doc_metadata,
         )
     except Exception as exc:
-        if not is_embedding_unavailable(exc):
+        if not _is_embedding_unavailable(exc):
             raise
         # The chunks are checkpointed; re-running the tool resumes at the store.
         log(f"{resource_id}: embedding is unavailable — the walk is checkpointed, "

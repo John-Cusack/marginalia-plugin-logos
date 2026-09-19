@@ -1,6 +1,6 @@
 [project]
 name = "marginalia-ai-plugin-logos"
-version = "0.2.0"
+version = "0.2.1"
 description = "Logos Bible Software plugin for Research Engine: API tools, verse-boundary chunking, resumable book ingestion"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Text Processing :: Indexing",
 ]
 dependencies = [
-    "marginalia-ai-sdk>=0.6,<0.7",
+    "marginalia-ai-sdk>=0.6.1,<0.7",
     "httpx>=0.27,<1",
     "asyncpg>=0.29,<1",
     "pydantic>=2.5,<3",

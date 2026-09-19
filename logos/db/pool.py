@@ -2,17 +2,13 @@
 
 Resolves the DSN in this priority order (see :func:`resolve_dsn`):
 
-1. an explicit DSN, where the caller has one: the migration CLI's ``--dsn``, or
-   the ``database_url`` core passes to the migration entries;
-2. ``RE_DB_URL`` env var;
-3. ``DATABASE_URL`` env var;
-4. ``_DEFAULT_DSN`` — mirrors the core engine's default.
+1. an explicit DSN from the migration capability or standalone CLI;
+2. the secret database URL MarginaliaAI 0.6.2 supplies in ``PluginContext``;
+3. ``RE_DB_URL`` or ``DATABASE_URL`` for standalone use.
 
-Research Engine 0.6 passes tool handlers no database URL: ``PluginContext`` has
-none, and database access is not a manifest permission. Inside the engine the
-tools therefore read the same ``RE_DB_URL`` the engine's process was started
-with. A URL that exists only in the engine's ``.env`` file never reaches the
-process environment, so the tools fall back to the default.
+Core loads `.env` into its settings without mutating process environment. Reading only
+``RE_DB_URL`` therefore sent tools to a local fallback database even while core itself
+used another database. The scoped context is now the authoritative tool-time source.
 """
 
 from __future__ import annotations
@@ -21,24 +17,34 @@ import os
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
+from research_engine_sdk import PluginConfigError
 
+from logos.lib.context import current_context
 from logos.lib.logger import log
 
-# Mirror of the core engine's default db_url, with the SQLAlchemy ``+asyncpg``
-# driver suffix stripped — asyncpg.connect() rejects it.
-_DEFAULT_DSN = "postgresql://re_dev:re_dev_pass@localhost:5435/research_engine"
+
+def _context_dsn() -> str | None:
+    context = current_context()
+    if context is None or context.database_url is None:
+        return None
+    return context.database_url.get_secret_value()
 
 _pool: asyncpg.Pool | None = None
 
 
 def resolve_dsn(dsn: str | None = None) -> str:
-    """Return the DSN to connect with, normalised to plain ``postgresql://`` form."""
+    """Return the configured DSN, normalised to plain ``postgresql://`` form."""
     resolved = (
         dsn
+        or _context_dsn()
         or os.environ.get("RE_DB_URL")
         or os.environ.get("DATABASE_URL")
-        or _DEFAULT_DSN
     )
+    if not resolved:
+        raise PluginConfigError(
+            "logos has no database URL. Run it through marginalia-ai>=0.6.2, "
+            "pass --dsn, or export RE_DB_URL for standalone use."
+        )
     # Core engine settings use SQLAlchemy-style URLs (``postgresql+asyncpg://``);
     # asyncpg only accepts plain ``postgresql://``. Strip any driver prefix.
     return resolved.replace("postgresql+asyncpg://", "postgresql://")

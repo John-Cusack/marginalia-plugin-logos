@@ -10,7 +10,7 @@ schema_version: 2
 plugin_id: logos
 
 requires:
-  core_api: ">=0.6,<0.7"
+  core_api: ">=0.6.2,<0.7"
   python: ">=3.11"
 
 permissions:
@@ -441,8 +441,8 @@ provides:
 
   # The logos_* tables (scholar authority records, ingest checkpoints) are
   # migrated only by `research-engine plugin migrate logos`, from the numbered
-  # SQL files in logos/db/migrations. Core 0.6 has no database permission to
-  # declare: the tools connect with the engine's RE_DB_URL themselves.
+  # SQL files in logos/db/migrations. Core supplies its configured database URL
+  # through PluginContext for tools and explicitly for migration entries.
   database:
     current_revision: 1
     status_entry: logos.db.migrate:status

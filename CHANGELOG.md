@@ -4,6 +4,18 @@ All notable changes to `marginalia-ai-plugin-logos`. Versions follow
 [PEP 440](https://peps.python.org/pep-0440/); while the version is 0.x, a minor
 release may break things.
 
+## [0.2.1] - 2026-09-19
+
+### Fixed
+
+- Database-backed tools now use the secret database URL MarginaliaAI 0.6.2
+  supplies in `PluginContext`. Core `.env` configuration no longer sends Logos
+  tools to an unrelated local fallback database.
+- Removed the core-exception class-name shim. MarginaliaAI's
+  `EmbeddingUnavailable` now derives from the SDK contract directly.
+- Standalone database commands refuse missing configuration instead of silently
+  connecting to development credentials.
+
 ## [0.2.0] - 2026-09-18
 
 The first release as a Python package. Everything below marked **Breaking**

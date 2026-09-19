@@ -23,7 +23,7 @@ You need a Logos account. The plugin reads only what that account can open.
 
 | Plugin | Research Engine (`marginalia-ai`) and `marginalia-ai-sdk` | Python | Database |
 |---|---|---|---|
-| 0.2.x | 0.6.x (`core_api: ">=0.6,<0.7"`) | 3.11–3.13 | The PostgreSQL database Research Engine uses |
+| 0.2.1 | 0.6.2+ (`core_api: ">=0.6.2,<0.7"`) | 3.11–3.13 | The PostgreSQL database Research Engine uses |
 
 The wheel depends on `marginalia-ai-sdk`, not on `marginalia-ai` itself;
 `logos/plugin.yaml` declares which core versions it runs under, and core refuses
@@ -166,13 +166,11 @@ uninstalling the plugin never drops them, and no plugin migration deletes data.
 Migrations run only when you ask. A migration file that changed after it was
 applied blocks every later upgrade until you look at it.
 
-The plugin connects on its own, using `RE_DB_URL` and then `DATABASE_URL` from
-the environment, falling back to the engine's own default
-(`postgresql://re_dev:re_dev_pass@localhost:5435/research_engine`). Core passes
-it no connection, so **`RE_DB_URL` must be in the engine's environment**, not
-only in an `.env` file the engine reads for itself: the plugin's tools do not
-read that file. `research-engine plugin migrate logos` is the exception — there
-core passes the database it is configured with.
+Core 0.6.2 supplies its configured database URL to every tool in
+`PluginContext`, including a value loaded from core's `.env`. Standalone
+commands use `RE_DB_URL` and then `DATABASE_URL`; they fail rather than guessing
+a local database when neither is configured. Migration entries continue to
+receive core's URL explicitly.
 
 To check or migrate from a shell:
 
