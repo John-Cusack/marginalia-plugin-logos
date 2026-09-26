@@ -169,8 +169,10 @@ async def test_manifest_description_matches_code_schema():
 
     import yaml
 
+    import logos
+
     manifest = yaml.safe_load(
-        (Path(__file__).parents[2] / "logos" / "plugin.yaml").read_text()
+        (Path(logos.__file__).resolve().parent / "plugin.yaml").read_text()
     )
     (spec,) = [
         t for t in manifest["provides"]["mcp_tools"] if t["id"] == "logos.passage_text"
