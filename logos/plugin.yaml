@@ -52,7 +52,7 @@ provides:
         properties:
           reference:
             type: string
-            description: Bible reference in Logos format (e.g., "bible.62.3.16-bible.62.3.16") or
+            description: Bible reference in Logos short-range format (e.g., "bible.64.3.16") or
               natural language (e.g., "John 3:16").
           versions:
             type: array

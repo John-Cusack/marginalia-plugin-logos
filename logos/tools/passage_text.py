@@ -43,8 +43,9 @@ def _comparison_body(reference: str, versions: list[str]) -> dict:
     """Build the comparisonV2/verses body the web client actually sends.
 
     Natural-language references go in ``strReference``; ``bible.`` references
-    go in ``rawReference`` in short-range form (``bible.A-B``, not the
-    documented ``bible.A-bible.B`` which the API rejects with 400).
+    go in ``rawReference`` in short-range form (``bible.A-B`` — the API
+    rejects both the long ``bible.A-bible.B`` form and the degenerate
+    same-verse ``bible.A-A`` range, which collapses to ``bible.A``).
     """
     ref = reference.strip()
     match = re.search(r"bible\+[^.]*\.(.*)", ref)
@@ -52,13 +53,22 @@ def _comparison_body(reference: str, versions: list[str]) -> dict:
         ref = "bible." + match.group(1)
     body: dict = {}
     if ref.startswith("bible."):
-        body["rawReference"] = ref.replace("-bible.", "-")
+        raw = re.sub(r"-bible(?:\+[^.]*)?\.", "-", ref)
+        start, sep, end = raw.partition("-")
+        if sep and start == f"bible.{end}":
+            raw = start
+        body["rawReference"] = raw
     else:
         body["strReference"] = ref
     ids = [v for v in (v.strip() for v in versions) if v]
     if ids and all(v.upper().startswith("LLS:") for v in ids):
         body["baseResource"] = ids[0]
         body["resources"] = ",".join(ids)
+    elif any(v.upper().startswith("LLS:") for v in ids):
+        raise ValueError(
+            "versions must be all library names/abbreviations or all LLS: ids, "
+            f"not mixed: {versions!r}"
+        )
     else:
         body["resourceNames"] = [_resource_name(v) for v in ids]
     return body
@@ -72,7 +82,7 @@ def _comparison_body(reference: str, versions: list[str]) -> dict:
         "properties": {
             "reference": {
                 "type": "string",
-                "description": 'Bible reference in Logos format (e.g., "bible.62.3.16-bible.62.3.16") or natural language (e.g., "John 3:16").',
+                "description": 'Bible reference in Logos short-range format (e.g., "bible.64.3.16") or natural language (e.g., "John 3:16").',
             },
             "versions": {
                 "type": "array",

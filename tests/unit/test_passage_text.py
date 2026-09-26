@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 import logos.tools.passage_text as passage_text
 from logos.tools.passage_text import handler
 
@@ -99,13 +101,107 @@ async def test_version_aliases_map_to_library_resource_names():
 async def test_logos_format_normalizes_to_short_raw_reference():
     from logos.tools.passage_text import _comparison_body
 
-    assert _comparison_body("bible.62.3.16-bible.62.3.16", ["ESV"]) == {
-        "rawReference": "bible.62.3.16-62.3.16",
+    assert _comparison_body("bible.63.3.12-bible.63.3.14", ["ESV"]) == {
+        "rawReference": "bible.63.3.12-63.3.14",
         "resourceNames": ["esv"],
     }
     assert _comparison_body("bible.63.3.12-63.3.14", ["ESV"])["rawReference"] == (
         "bible.63.3.12-63.3.14"
     )
+
+
+async def test_same_verse_range_collapses_to_single_reference():
+    from logos.tools.passage_text import _comparison_body
+
+    # The API 400s the degenerate bible.A-A range (verified live 2026-09-26).
+    assert (
+        _comparison_body("bible.62.3.16-bible.62.3.16", ["ESV"])["rawReference"]
+        == "bible.62.3.16"
+    )
+
+
+async def test_qualified_range_second_half_is_stripped():
+    from logos.tools.passage_text import _comparison_body
+
+    assert (
+        _comparison_body("bible+esv.66.13.3-bible+esv.66.13.5", ["ESV"])["rawReference"]
+        == "bible.66.13.3-66.13.5"
+    )
+    assert (
+        _comparison_body("bible+esv.66.13.3", ["ESV"])["rawReference"]
+        == "bible.66.13.3"
+    )
+
+
+async def test_mixed_lls_and_names_rejected_loudly():
+    import pytest
+
+    from logos.tools.passage_text import _comparison_body
+
+    with pytest.raises(ValueError, match="not mixed"):
+        _comparison_body("Luke 3:12-14", ["LLS:1.0.710", "ESV"])
+
+
+async def test_api_errors_propagate_instead_of_default_panel():
+    import pytest
+
+    with patch.object(
+        passage_text.logos_client, "post", side_effect=RuntimeError("400 Bad Request")
+    ):
+        with pytest.raises(RuntimeError, match="400"):
+            await handler(reference="Luke 3:12-14", versions=["ESV"])
+
+
+async def test_documented_example_round_trips_through_body_builder():
+    import re
+
+    from logos.tools.passage_text import _comparison_body
+
+    description = handler._tool_input_schema["properties"]["reference"]["description"]
+    for example in re.findall(r"bible\.[0-9.\-]+", description):
+        body = _comparison_body(example, ["ESV"])
+        assert "-bible." not in body["rawReference"]
+        assert body["rawReference"].count("-") <= 1
+
+
+async def test_manifest_description_matches_code_schema():
+    from pathlib import Path
+
+    import yaml
+
+    manifest = yaml.safe_load(
+        (Path(__file__).parents[2] / "logos" / "plugin.yaml").read_text()
+    )
+    (spec,) = [
+        t for t in manifest["provides"]["mcp_tools"] if t["id"] == "logos.passage_text"
+    ]
+    assert (
+        spec["input_schema"]["properties"]["reference"]["description"]
+        == handler._tool_input_schema["properties"]["reference"]["description"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("ESV", "esv"),
+        ("esv", "esv"),
+        ("LEB", "leb"),
+        ("NIV", "niv2011"),
+        ("KJV", "kjv1900"),
+        ("NASB", "nasb95"),
+        ("NASB95", "nasb95"),
+        ("NASB2020", "nasb2020"),
+        ("NLT", "nlt"),
+        ("ASV", "asv"),
+        ("  ESV  ", "esv"),
+        ("LLS:1.0.710", "LLS:1.0.710"),
+    ],
+)
+async def test_version_matrix(version: str, expected: str):
+    from logos.tools.passage_text import _resource_name
+
+    assert _resource_name(version) == expected
 
 
 async def test_default_version_is_leb():
